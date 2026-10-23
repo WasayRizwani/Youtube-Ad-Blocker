@@ -1,0 +1,29 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["doubleclick.net", "googlesyndication.com", "googleadservices.com", "adnxs.com", "adsrvr.org", "advertising.com", "amazon-adsystem.com", "casalemedia.com", "criteo.com", "criteo.net", "openx.net", "pubmatic.com", "rubiconproject.com", "smartadserver.com"],
+      "resourceTypes": ["script", "image", "xmlhttprequest", "sub_frame", "media", "ping", "websocket", "other"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||youtube.com/api/stats/ads",
+      "resourceTypes": ["xmlhttprequest", "ping", "image", "other"]
+    }
+  },
+  {
+    "id": 3,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||youtube.com/pagead/",
+      "resourceTypes": ["script", "xmlhttprequest", "image", "ping", "sub_frame", "other"]
+    }
+  }
+]
