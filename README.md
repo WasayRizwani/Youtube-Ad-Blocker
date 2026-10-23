@@ -14,7 +14,7 @@ A dependency-free Chrome extension (Manifest V3, Chrome 111+) for reducing ads w
 4. Pin **QuietBrowse** in Chrome's extensions menu, then reload existing website tabs.
 
 To upgrade, replace the files in the folder you previously loaded, click **Reload**
-on the extension card, and confirm **0.4.0** appears on the card and in the popup.
+on the extension card, and confirm **0.4.1** appears on the card and in the popup.
 Allow the extension access to YouTube in Chrome's extension settings, then reload
 YouTube. If you choose a different folder, remove the old copy first so two copies
 do not run together.
@@ -33,6 +33,14 @@ There is no build step, account, API key, or npm installation required. Changes 
 - The popup distinguishes a loaded player script from observed response filtering. **Player script loaded; ad blocking is not confirmed** means no ad-data fields were removed. **Player ad data was filtered on this page** means the removed-field count is positive; this is still not proof that ads were blocked. If the script is inactive, reload the tab and check extension site access.
 
 Version 0.4.0 adds these visible counts without changing which requests or player ad fields are filtered.
+
+Version 0.4.1 reduces the extension's work during YouTube loading and playback:
+
+- Normal playback has no periodic player polling. Player checks are batched and scoped to the player; unrelated page updates reuse the cached player reference. An ad with Skip controls retains a limited retry so controls revealed later still work.
+- Responses with no ad-field names or possible Unicode-escaped keys bypass extra JSON parsing. Repeated reads of an unchanged serialized player response reuse its filtered result.
+- Explicit HTML and media responses pass through without waiting for their bodies. JSON responses and ambiguous content types retain response filtering.
+
+In the local Chromium fixture, 100 unrelated page updates plus idle time went from 103 player lookups to zero. A simulated minute of normal playback went from 240 polling callbacks to zero. These measure reduced extension work, not a verified improvement to live YouTube loading time.
 
 ## Behavior and limitations
 
@@ -64,7 +72,7 @@ npm run test:extension
 
 The browser checks also require `chromium` on PATH (or a `CHROMIUM` executable override). They run a disposable headless browser profile against local fixtures and clean it up afterward. On Linux they use `--no-sandbox`, intended only for a trusted development container.
 
-The unit suite checks response pruning and native API behavior, response-counter deduplication, native badge configuration, registration/exclusions, site boundaries, preference persistence, error recovery, sender validation, and filter conversion safety.
+The unit suite checks response pruning and native API behavior, response-counter deduplication, native badge configuration, registration/exclusions, site boundaries, preference persistence, error recovery, sender validation, and filter conversion safety. Performance regressions cover idle polling, batched Skip checks, player replacement, cached string reads, Unicode-escaped ad fields, and non-JSON response pass-through.
 
 `test:browser` runs the production page script and isolated content script in separate Chromium worlds. A synthetic YouTube origin is served entirely from local fixtures through DevTools request interception: no live YouTube page or advertising server is contacted. Tests exercise inline player bootstrap, native fetch/XHR, preservation of normal response data, the preference bridge, visible Skip buttons, cosmetics, popup diagnostics, separate request/response counts, automatic count updates, unavailable-count handling, and playable media transitioning under stale ad markers. These fixtures do **not** validate installed-extension permissions, real network-rule enforcement, or live YouTube compatibility.
 
@@ -76,7 +84,7 @@ In this cloud environment, unpacked installation is blocked by `ExtensionInstall
 
 For live validation in a Chrome profile that permits developer extensions:
 
-1. Load version 0.4.0, grant YouTube site access, and reload the tab. Check the popup's script status and separate counters, plus the extension card and service worker console for errors. A loaded script with zero removals does not establish ad blocking.
+1. Load version 0.4.1, grant YouTube site access, and reload the tab. Check the popup's script status and separate counters, plus the extension card and service worker console for errors. A loaded script with zero removals does not establish ad blocking.
 2. On a page making a request to an included advertising domain, verify DevTools Network reports `ERR_BLOCKED_BY_CLIENT`, while the main content and normal controls work.
 3. Allow that site and reload; verify the same request is allowed and hidden containers return. Remove the exception to restore filtering. Repeat with the global switch off and on.
 4. Test YouTube playback, navigation between videos, captions, seeking, volume, playback speed, and visible Skip buttons. Verify regular content starts normally and a previously muted video stays muted.

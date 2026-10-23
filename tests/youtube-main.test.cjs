@@ -73,6 +73,32 @@ test('unchanged, malformed, binary-like, cyclic, and excessively nested data fai
   assert.equal(prunePlayer(deep).removed, 0);
 });
 
+test('ad-free text avoids JSON parsing while escaped keys and serialized wrappers remain filtered', () => {
+  let parses = 0;
+  const context = { module: { exports: {} }, JSON: {
+    parse(value) { parses++; return JSON.parse(value); }, stringify: JSON.stringify
+  } };
+  vm.runInNewContext(source, context);
+  const prune = context.module.exports.pruneText;
+  const ordinary = JSON.stringify({ contents: Array.from({ length: 1000 }, (_, i) => ({ videoId: `video-${i}` })) });
+  assert.equal(prune(ordinary).value, ordinary);
+  assert.equal(prune('<!doctype html><title>Watch</title>').removed, 0);
+  assert.equal(parses, 0, 'ad-free data does not incur a second JSON parse');
+
+  for (const escaped of [
+    String.raw`{"adSl\u006fts":[{"slot":1}],"videoDetails":{"videoId":"keep"}}`,
+    String.raw`{"\u0070layerAds":[{"slot":1}],"videoDetails":{"videoId":"keep"}}`
+  ]) {
+    for (const text of [escaped, JSON.stringify({ player_response: escaped }), ")]}'\n" + JSON.stringify([{ playerResponse: JSON.parse(escaped) }])]) {
+      const result = prune(text);
+      assert.equal(result.removed, 1);
+      assert.equal(result.hasAdData, true);
+      assert.ok(result.value.includes('keep'));
+    }
+  }
+  assert.ok(parses > 0);
+});
+
 function harness(host = 'www.youtube.com', before) {
   const listeners = new Map();
   const messages = [];
@@ -276,6 +302,49 @@ test('get_watch and PBJ watch payloads are cleaned, while HTML stays unchanged',
   assert.equal(await page.context.fetch('https://www.youtube.com/watch?v=example'), html);
 });
 
+test('explicit HTML and binary fetch responses return without cloning or waiting for the body', async () => {
+  const page = harness();
+  const url = 'https://www.youtube.com/watch?v=example';
+  for (const type of ['text/html; charset=utf-8', 'APPLICATION/XHTML+XML', 'image/png', 'video/mp4', 'audio/mp4', 'font/woff2', 'application/pdf']) {
+    let controller;
+    const body = new ReadableStream({ start(value) { controller = value; } });
+    const original = new Response(body, { headers: { 'content-type': type } });
+    Object.defineProperty(original, 'url', { value: url });
+    let clones = 0;
+    original.clone = () => { clones++; throw new Error('Unsupported content must not be read'); };
+    page.factory(() => original);
+    const result = await page.context.fetch(url);
+    assert.equal(result, original);
+    assert.equal(clones, 0, type);
+    assert.equal(original.bodyUsed, false);
+    controller.enqueue(new TextEncoder().encode('untouched body'));
+    controller.close();
+    assert.equal(await result.text(), 'untouched body');
+  }
+  const empty = new Response(null, { status: 204 });
+  Object.defineProperty(empty, 'url', { value: url });
+  empty.clone = () => { throw new Error('Empty body must not be read'); };
+  page.factory(() => empty);
+  assert.equal(await page.context.fetch(url), empty);
+});
+
+test('missing, plain-text, and unfamiliar fetch types still filter supported JSON and XSSI', async () => {
+  const page = harness();
+  const url = 'https://www.youtube.com/youtubei/v1/player';
+  for (const type of [null, 'text/plain', 'application/octet-stream', 'application/json; charset=utf-8', 'application/vnd.youtube+json', 'application/x-unknown']) {
+    const text = ")]}'\n" + JSON.stringify(player());
+    const original = new Response(text);
+    if (type === null) original.headers.delete('content-type');
+    else original.headers.set('content-type', type);
+    Object.defineProperty(original, 'url', { value: url });
+    page.factory(() => original);
+    const result = await page.context.fetch(url);
+    const parsed = JSON.parse((await result.text()).slice(5));
+    assert.equal(parsed.adSlots, undefined, String(type));
+    assert.equal(parsed.videoDetails.videoId, 'ordinary-video');
+  }
+});
+
 test('XHR text and JSON getters sanitize before any page event handler reads them', () => {
   const page = harness();
   for (const responseType of ['', 'text', 'json']) {
@@ -380,6 +449,46 @@ test('serialized initial getters and stable frozen response views do not inflate
   page.run('window.ytInitialPlayerResponse = frozen');
   for (let i = 0; i < 10; i++) page.run('ytInitialPlayerResponse');
   assert.equal((await latestReport(page)).filteredResponses, 3);
+});
+
+test('serialized property reads reuse sanitized strings and refresh on changes without changing disable behavior', async () => {
+  let parses = 0;
+  const page = harness('www.youtube.com', context => {
+    context.JSON = { parse(value) { parses++; return JSON.parse(value); }, stringify: JSON.stringify };
+  });
+  page.context.raw = JSON.stringify(player());
+  page.run(`window.ytplayer = {config: {args: {
+    get player_response() { return raw; },
+    set player_response(value) { raw = value; }
+  }}}`);
+  const first = page.run('ytplayer.config.args.player_response');
+  assert.equal(parses, 1);
+  assert.equal(JSON.parse(first).adSlots, undefined);
+  for (let i = 0; i < 50; i++) assert.equal(page.run('ytplayer.config.args.player_response'), first);
+  assert.equal(parses, 1, 'repeated raw property reads reuse the filtered result');
+  let report = await latestReport(page);
+  assert.equal(report.filteredResponses, 1);
+  assert.equal(report.removed, 3);
+
+  page.control(false);
+  assert.equal(page.run('ytplayer.config.args.player_response'), page.context.raw);
+  assert.ok(JSON.parse(page.context.raw).adSlots);
+  assert.equal(parses, 1);
+  page.control(true);
+  assert.equal(page.run('ytplayer.config.args.player_response'), first);
+  assert.equal(parses, 1);
+
+  const next = player(); next.videoDetails.videoId = 'next-video';
+  page.context.raw = JSON.stringify(next);
+  assert.equal(JSON.parse(page.run('ytplayer.config.args.player_response')).videoDetails.videoId, 'next-video');
+  assert.equal(parses, 2, 'a changed raw value must be filtered again');
+  report = await latestReport(page);
+  assert.equal(report.filteredResponses, 2);
+
+  page.run('ytplayer.config.args.player_response = raw');
+  for (let i = 0; i < 20; i++) page.run('ytplayer.config.args.player_response');
+  assert.equal(parses, 2, 'reads of the cached sanitized string must also avoid parsing');
+  assert.equal((await latestReport(page)).filteredResponses, 2);
 });
 
 test('empty, malformed, unrelated, and disabled responses never increase the response counter', async () => {

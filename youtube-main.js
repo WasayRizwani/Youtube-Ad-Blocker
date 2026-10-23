@@ -2,6 +2,7 @@
 (() => {
   'use strict';
   const AD_FIELDS = ['adPlacements', 'playerAds', 'adSlots'];
+  const AD_FIELD_TEXT = /adPlacements|playerAds|adSlots|\\u/;
 
   // Deliberately avoid recursive key deletion: ordinary video metadata, signed
   // streams, authentication, captions, DRM, and playability must stay untouched.
@@ -56,6 +57,11 @@
 
   function pruneText(text, depth = 0) {
     if (typeof text !== 'string') return { value: text, removed: 0 };
+    // Recommendation responses can be large even when they contain no ads.
+    // A field's spelling must occur literally or through a JSON Unicode escape,
+    // including inside serialized player-response wrappers. Leave those escaped
+    // cases to the parser so this shortcut cannot hide a supported ad field.
+    if (!AD_FIELD_TEXT.test(text)) return { value: text, removed: 0 };
     const prefix = /^\)\]\}'(?:\r?\n)?/.exec(text)?.[0] || '';
     try {
       const result = prunePayload(JSON.parse(text.slice(prefix.length)), depth);
@@ -147,12 +153,13 @@
         return record({ value: clean, removed: result.removed, hasAdData: result.hasAdData }, 'initial');
       }
       if (!enabled) return value;
+      // Strings are immutable: repeated reads of the same raw or already-clean
+      // property need neither JSON parsing nor a second removal/count update.
+      const previous = typeof value === 'string' && context && initialTextReads.get(context);
+      if (previous && (previous.raw === value || previous.value === value)) return previous.value;
       const result = pruneText(value);
-      // Legacy config getters can return the same serialized response on each
-      // read. Count its interception once per property until the value changes.
-      const repeatedText = typeof value === 'string' && context && initialTextReads.get(context) === value;
-      if (result.removed && typeof value === 'string' && context) initialTextReads.set(context, value);
-      return record(result, 'initial', !repeatedText);
+      if (typeof value === 'string' && context) initialTextReads.set(context, { raw: value, value: result.value });
+      return record(result, 'initial');
     } catch { return value; }
   }
 
@@ -287,6 +294,13 @@
         return promise.then(async response => {
           if (!enabled || !isPlayerURL(response.url || requestURL)) return response;
           try {
+            const type = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
+            // /watch and /playlist also serve documents. Waiting for an HTML or
+            // binary body here delays fetch for data we cannot filter anyway.
+            // Missing/ambiguous types (including text/plain) still get checked.
+            if (!response.body || type === 'text/html' || type === 'application/xhtml+xml' ||
+                type === 'application/pdf' ||
+                /^(?:image|audio|video|font)\//.test(type || '')) return response;
             const text = await response.clone().text();
             // A disable request can arrive while the body is being read.
             if (!enabled) return response;

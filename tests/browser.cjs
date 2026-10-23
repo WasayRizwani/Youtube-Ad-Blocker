@@ -190,7 +190,29 @@ const server = http.createServer((req, res) => {
       assert.deepEqual(value.playbackTracking, playerResponse.playbackTracking);
     }
     const main = `window.fixtureReports = []; addEventListener('message', event => { if (event.data?.source === 'quietbrowse-youtube-status') fixtureReports.push(event.data); });\n` + fs.readFileSync(path.join(root, 'youtube-main.js'), 'utf8');
-    const content = mock + fs.readFileSync(path.join(root, 'core.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'content.js'), 'utf8');
+    // Observe extension work in its isolated world, excluding the fixture's own
+    // DOM queries. These counts catch regressions without timing thresholds.
+    const contentProbe = `
+      window.fixtureContentWork = { playerLookups: 0, skipQueries: 0, intervals: 0 };
+      for (const [method, playerKey] of [['querySelector', '#movie_player'], ['getElementById', 'movie_player']]) {
+        const native = Document.prototype[method];
+        Document.prototype[method] = function (...args) {
+          if (args[0] === playerKey) fixtureContentWork.playerLookups++;
+          return Reflect.apply(native, this, args);
+        };
+      }
+      const nativeQueryAll = Element.prototype.querySelectorAll;
+      Element.prototype.querySelectorAll = function (...args) {
+        if (String(args[0]).includes('.ytp-skip-ad-button')) fixtureContentWork.skipQueries++;
+        return Reflect.apply(nativeQueryAll, this, args);
+      };
+      const nativeInterval = window.setInterval;
+      window.setInterval = function (...args) {
+        fixtureContentWork.intervals++;
+        return Reflect.apply(nativeInterval, this, args);
+      };
+    `;
+    const content = mock + contentProbe + fs.readFileSync(path.join(root, 'core.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'content.js'), 'utf8');
     const session = await page(main, 'https://www.youtube.com/fixture', content);
     assertCleanPlayer(await evaluate(session, 'JSON.parse(inlinePlayerSnapshot)'));
     await waitFor(session, 'fixtureReports.at(-1)?.filteredResponses === 1');
@@ -223,6 +245,24 @@ const server = http.createServer((req, res) => {
     await evaluate(session, `document.body.insertAdjacentHTML('beforeend', '<ins id="lazy" class="adsbygoogle">Lazy ad</ins>')`);
     assert.equal(await evaluate(session, 'getComputedStyle(document.querySelector("#lazy")).display'), 'none');
     console.log('PASS: scrolling ad containers hidden; ordinary content and generic .ad class remain visible');
+    const workBefore = await evaluate(session, '({...fixtureContentWork})', true);
+    await evaluate(session, `(async () => {
+      const article = document.querySelector('#article');
+      for (let index = 0; index < 100; index++) {
+        article.className = 'scroll-position-' + index;
+        article.append(document.createElement('span'));
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      await new Promise(resolve => setTimeout(resolve, 350));
+    })()`);
+    const workAfter = await evaluate(session, '({...fixtureContentWork})', true);
+    const extraLookups = workAfter.playerLookups - workBefore.playerLookups;
+    const extraSkipQueries = workAfter.skipQueries - workBefore.skipQueries;
+    console.log(`Player work during 100 unrelated page updates plus idle time: ${extraLookups} lookups, ${extraSkipQueries} Skip queries, ${workAfter.intervals} repeating intervals`);
+    assert.equal(extraLookups, 0);
+    assert.equal(extraSkipQueries, 0);
+    assert.equal(workAfter.intervals, 0);
+    console.log('PASS: unrelated page updates and idle playback do not rescan the player or start repeating intervals');
     await evaluate(session, `(() => {
       const player = document.querySelector('#movie_player'); player.classList.add('ad-showing');
       const hidden = document.createElement('button'); hidden.className = 'ytp-skip-ad-button'; hidden.style.display = 'none'; hidden.onclick = () => window.hiddenSkipClicked = true;
@@ -233,6 +273,32 @@ const server = http.createServer((req, res) => {
     assert.equal(await evaluate(session, '!!window.hiddenSkipClicked'), false);
     await evaluate(session, `document.querySelectorAll('.ytp-skip-ad-button').forEach(button => button.remove())`);
     console.log('PASS: visible skip button works even when a hidden duplicate precedes it');
+    await evaluate(session, `(() => {
+      const old = document.querySelector('#movie_player');
+      const next = document.createElement('div'); next.id = 'movie_player';
+      next.append(old.querySelector('video')); old.replaceWith(next);
+      const skip = document.createElement('button'); skip.className = 'ytp-skip-ad-button';
+      skip.textContent = 'Skip'; skip.disabled = true; skip.style.display = 'none';
+      skip.onclick = () => { window.replacedSkipClicked = true; next.classList.remove('ad-showing'); };
+      next.classList.add('ad-showing'); next.append(skip);
+      setTimeout(() => { skip.style.display = ''; skip.disabled = false; }, 200);
+    })()`);
+    await waitFor(session, 'window.replacedSkipClicked');
+    await evaluate(session, `document.querySelector('.ytp-skip-ad-button').remove()`);
+    console.log('PASS: replacement players and Skip controls that become visible and enabled remain supported');
+    await evaluate(session, `(() => {
+      const old = document.querySelector('#movie_player'); old.id = 'retained-old-player';
+      const next = document.createElement('div'); next.id = 'pending-player';
+      next.append(old.querySelector('video')); old.after(next);
+      const skip = document.createElement('button'); skip.className = 'ytp-skip-ad-button'; skip.textContent = 'Skip';
+      skip.onclick = () => { window.transferredSkipClicked = true; next.classList.remove('ad-showing'); };
+      next.classList.add('ad-showing'); next.append(skip);
+      setTimeout(() => { next.id = 'movie_player'; }, 200);
+    })()`);
+    await waitFor(session, 'window.transferredSkipClicked');
+    assert.equal(await evaluate(session, 'document.querySelector("#retained-old-player").isConnected'), true);
+    await evaluate(session, `document.querySelector('.ytp-skip-ad-button').remove()`);
+    console.log('PASS: player ID transfer and late identification work while the old element stays connected');
     await evaluate(session, `(() => {
       const player = document.querySelector('#movie_player');
       const video = player.querySelector('video');
@@ -317,7 +383,7 @@ const server = http.createServer((req, res) => {
     assert.equal(await evaluate(ordinaryPopup, 'document.querySelector("#video-counter").hidden'), true);
     assert.equal(await evaluate(ordinaryPopup, 'getComputedStyle(document.querySelector("#video-counter")).display'), 'none');
     console.log('PASS: non-YouTube pages show the request counter without an irrelevant video-response card');
-    console.log('13 browser fixture checks passed. Actual unpacked installation/DNR requires --extension; live YouTube remains unverified.');
+    console.log('16 browser fixture checks passed. Actual unpacked installation/DNR requires --extension; live YouTube remains unverified.');
   } finally {
     clearTimeout(deadline);
     browser.kill();
