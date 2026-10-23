@@ -10,7 +10,7 @@ A dependency-free Chrome extension (Manifest V3, Chrome 111+) for reducing ads w
 4. Pin **QuietBrowse** in Chrome's extensions menu, then reload existing website tabs.
 
 To upgrade, replace the files in the folder you previously loaded, click **Reload**
-on the extension card, and confirm **0.3.0** appears on the card and in the popup.
+on the extension card, and confirm **0.3.1** appears on the card and in the popup.
 Allow the extension access to YouTube in Chrome's extension settings, then reload
 YouTube. If you choose a different folder, remove the old copy first so two copies
 do not run together.
@@ -23,7 +23,9 @@ There is no build step, account, API key, or npm installation required. Changes 
 - **Allow ads on this site** exempts the current hostname and its subdomains from both request blocking and cosmetic filtering. Use it if videos, login, checkout, or another feature stops working.
 - **Allowed websites** lists exceptions and lets you remove them.
 - **Reload this tab** applies request changes to the whole page. Already blocked resources cannot be restored without reloading.
-- The popup shows whether the YouTube player filter is registered and active on the current tab. Its removed-field count is a diagnostic for response filtering, not a count of ads blocked. If the filter is inactive, reload the tab and check extension site access.
+- The popup distinguishes a loaded player script from observed response filtering. **Player script loaded; ad blocking is not confirmed** means no ad-data fields were removed. **Player ad data was filtered on this page** means the removed-field count is positive; this is still not proof that ads were blocked. If the script is inactive, reload the tab and check extension site access.
+
+Version 0.3.1 corrects this status reporting only. It does not add an ad-blocking fix.
 
 ## Behavior and limitations
 
@@ -67,7 +69,7 @@ In this cloud environment, unpacked installation is blocked by `ExtensionInstall
 
 For live validation in a Chrome profile that permits developer extensions:
 
-1. Load version 0.3.0, grant YouTube site access, and reload the tab. Confirm the popup says the player filter is running; check the extension card and service worker console for errors.
+1. Load version 0.3.1, grant YouTube site access, and reload the tab. Check the popup's script status and removed-field count, plus the extension card and service worker console for errors. A loaded script with zero removals does not establish ad blocking.
 2. On a page making a request to an included advertising domain, verify DevTools Network reports `ERR_BLOCKED_BY_CLIENT`, while the main content and normal controls work.
 3. Allow that site and reload; verify the same request is allowed and hidden containers return. Remove the exception to restore filtering. Repeat with the global switch off and on.
 4. Test YouTube playback, navigation between videos, captions, seeking, volume, playback speed, and visible Skip buttons. Verify regular content starts normally and a previously muted video stays muted.

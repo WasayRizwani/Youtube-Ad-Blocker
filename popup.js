@@ -32,8 +32,9 @@ async function refreshProtection(settings) {
       details.textContent = 'Reload this tab. If it stays inactive, allow this extension access to YouTube in Chrome’s extension settings.';
       return;
     }
-    protection.textContent = 'YouTube player filter is running.';
-    const removed = page.playerFilter.removed;
+    const removed = Number.isSafeInteger(page.playerFilter.removed) && page.playerFilter.removed > 0 ? page.playerFilter.removed : 0;
+    protection.textContent = removed > 0 ? 'Player ad data was filtered on this page.' :
+      'Player script loaded; ad blocking is not confirmed.';
     details.textContent = `${removed} ad-data fields removed on this page. This is a response-filter diagnostic, not a count of ads blocked. Live YouTube compatibility is not guaranteed.`;
   } catch (error) {
     protection.textContent = 'Protection could not start. Reload the extension.';

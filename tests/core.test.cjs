@@ -6,6 +6,7 @@ const vm = require('node:vm');
 const { execFileSync } = require('node:child_process');
 const core = require('../core.js');
 const root = path.resolve(__dirname, '..');
+const VERSION = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'))).version;
 
 test('site exceptions respect hostname boundaries and include subdomains', () => {
   const settings = core.normalize({ allowedHosts: ['EXAMPLE.com', 'example.com', null] });
@@ -51,7 +52,7 @@ function background(options = {}) {
   let failScript = options.failRegistration === true;
   const chrome = {
     runtime: { id: 'test-extension', getURL: file => `chrome-extension://test-extension/${file}`,
-      getManifest: () => ({ version: '0.3.0' }),
+      getManifest: () => ({ version: VERSION }),
       onMessage: { addListener(fn) { listener = fn; } } },
     storage: { local: {
       async get() { return { settings: saved }; },
@@ -118,7 +119,7 @@ test('background keeps MAIN registration in sync with site exceptions and global
   const health = await app.send({ type: 'GET_HEALTH' });
   assert.equal(health.health.youtubeRegistered, true);
   assert.equal(health.health.error, null);
-  assert.equal(health.health.version, '0.3.0');
+  assert.equal(health.health.version, VERSION);
   await app.send({ type: 'SET_SITE_ALLOWED', host: 'www.youtube.com', allowed: true });
   assert.deepEqual(Array.from(app.scripts()[0].excludeMatches), ['*://*.www.youtube.com/*']);
   await app.send({ type: 'SET_ENABLED', enabled: false });

@@ -9,6 +9,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { once } = require('node:events');
 const root = path.resolve(__dirname, '..');
+const currentVersion = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8')).version;
 const extensionMode = process.argv.includes('--extension');
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'quietbrowse-test-'));
 const playerResponse = {
@@ -261,8 +262,8 @@ const server = http.createServer((req, res) => {
       let prefs = { enabled: true, allowedHosts: [] };
       globalThis.chrome = {
         tabs: { query: async () => [{id: 1, url: 'https://www.youtube.com/watch?v=test'}], reload: async () => {}, sendMessage: async () => ({enabled: true, youtube: true, playerFilter: {active: true, removed: 3}}) },
-        runtime: { getManifest: () => ({version: '0.3.0'}), sendMessage: async msg => {
-          if (msg.type === 'GET_HEALTH') return {health: {version: '0.3.0', youtubeRegistered: true}};
+        runtime: { getManifest: () => ({version: ${JSON.stringify(currentVersion)}}), sendMessage: async msg => {
+          if (msg.type === 'GET_HEALTH') return {health: {version: ${JSON.stringify(currentVersion)}, youtubeRegistered: true}};
           if (msg.type === 'SET_ENABLED') prefs.enabled = msg.enabled;
           if (msg.type === 'SET_SITE_ALLOWED') prefs.allowedHosts = msg.allowed ? [msg.host] : [];
           return {settings: structuredClone(prefs)};
@@ -272,19 +273,23 @@ const server = http.createServer((req, res) => {
     const popup = await page(popupMock, `http://127.0.0.1:${port}/popup.html`);
     await waitFor(popup, '!document.querySelector("#enabled").disabled');
     assert.equal(await evaluate(popup, 'document.querySelector("#host").textContent'), 'www.youtube.com');
-    await waitFor(popup, 'document.querySelector("#protection").textContent.includes("filter is running")');
-    assert.equal(await evaluate(popup, 'document.querySelector("#version").textContent'), 'v0.3.0');
+    await waitFor(popup, 'document.querySelector("#protection").textContent === "Player ad data was filtered on this page."');
+    assert.equal(await evaluate(popup, 'document.querySelector("#version").textContent'), `v${currentVersion}`);
     assert.ok(await evaluate(popup, 'document.querySelector("#diagnostics").textContent.includes("3 ad-data fields")'));
     await evaluate(popup, 'document.querySelector("#allowed").click()');
     await waitFor(popup, 'document.querySelector("#exceptions").textContent.includes("www.youtube.com")');
     await evaluate(popup, 'document.querySelector("#enabled").click()');
     await waitFor(popup, '!document.querySelector("#enabled").disabled && !document.querySelector("#enabled").checked');
     console.log('PASS: popup website display, exception toggle, and global switch');
+    const unchangedPopup = await page(popupMock.replace('removed: 3', 'removed: 0'), `http://127.0.0.1:${port}/popup.html?unchanged=1`);
+    await waitFor(unchangedPopup, 'document.querySelector("#protection").textContent === "Player script loaded; ad blocking is not confirmed."');
+    assert.ok(await evaluate(unchangedPopup, 'document.querySelector("#diagnostics").textContent.includes("0 ad-data fields")'));
+    console.log('PASS: loaded script with zero removals does not claim ad filtering occurred');
     const failingPopup = await page(popupMock.replace('youtubeRegistered: true', 'youtubeRegistered: false'), `http://127.0.0.1:${port}/popup.html?error=1`);
     await waitFor(failingPopup, 'document.querySelector("#protection").textContent.includes("could not start")');
     assert.ok(await evaluate(failingPopup, 'document.querySelector("#diagnostics").textContent.includes("not registered")'));
     console.log('PASS: popup surfaces registration failure instead of claiming active protection');
-    console.log('10 browser fixture checks passed. Actual unpacked installation/DNR requires --extension; live YouTube remains unverified.');
+    console.log('11 browser fixture checks passed. Actual unpacked installation/DNR requires --extension; live YouTube remains unverified.');
   } finally {
     clearTimeout(deadline);
     browser.kill();
