@@ -2,6 +2,10 @@
 
 A dependency-free Chrome extension (Manifest V3, Chrome 111+) for reducing ads while preserving normal browsing and playback. YouTube support is best effort; live YouTube compatibility has not been verified in this cloud environment.
 
+<img src="docs/images/quietbrowse-popup.png" alt="QuietBrowse popup showing 10 blocked ad requests, 4 filtered YouTube ad responses, and site controls" width="308">
+
+*Popup preview with example counts.* **Ad requests blocked** counts blocked network requests; **YouTube ad responses filtered** counts player responses whose ad data was removed. Counts reset on reload, and several requests or responses can belong to one ad.
+
 ## Install in Chrome
 
 1. [Download the current GitHub ZIP](https://github.com/WasayRizwani/Ad-Blocker/archive/refs/heads/main.zip) and extract it.
