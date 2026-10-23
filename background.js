@@ -1,5 +1,6 @@
 'use strict';
 importScripts('core.js');
+const RULESETS = ['ads', 'easylist'];
 
 let queue = Promise.resolve();
 async function apply(settings) {
@@ -9,8 +10,8 @@ async function apply(settings) {
     addRules: QuietBrowse.exceptionRules(settings)
   });
   await chrome.declarativeNetRequest.updateEnabledRulesets({
-    enableRulesetIds: settings.enabled ? ['ads'] : [],
-    disableRulesetIds: settings.enabled ? [] : ['ads']
+    enableRulesetIds: settings.enabled ? RULESETS : [],
+    disableRulesetIds: settings.enabled ? [] : RULESETS
   });
   await chrome.action.setBadgeText({ text: settings.enabled ? '' : 'OFF' });
   await chrome.action.setBadgeBackgroundColor({ color: '#64748b' });

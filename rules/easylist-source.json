@@ -1,0 +1,8 @@
+{
+  "source": "https://raw.githubusercontent.com/easylist/easylist/7ae1547caaf9b02d0ed4fb00292602d06a9bc52d/easylist/easylist_adservers.txt",
+  "revision": "7ae1547caaf9b02d0ed4fb00292602d06a9bc52d",
+  "sha256": "10ef4299ec374b809ca6947e67a828514deed472a0924557a529ea97fe385a77",
+  "domainCount": 49577,
+  "ruleCount": 248,
+  "license": "CC-BY-SA-3.0"
+}

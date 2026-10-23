@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { execFileSync } = require('node:child_process');
 const core = require('../core.js');
 const root = path.resolve(__dirname, '..');
 
@@ -78,7 +79,7 @@ test('background persists switches and removes inherited site exceptions', async
   assert.equal(app.network().enabled.length, 0);
   assert.equal((await app.send({ type: 'GET_STATE' })).settings.enabled, false);
   await app.send({ type: 'SET_ENABLED', enabled: true });
-  assert.deepEqual(Array.from(app.network().enabled), ['ads']);
+  assert.deepEqual(Array.from(app.network().enabled), ['ads', 'easylist']);
 });
 
 test('failed persistence restores network configuration and queue remains usable', async () => {
@@ -87,7 +88,7 @@ test('failed persistence restores network configuration and queue remains usable
   app.failNextSave();
   const result = await app.send({ type: 'SET_ENABLED', enabled: false });
   assert.equal(result.error, 'Storage failure');
-  assert.deepEqual(Array.from(app.network().enabled), ['ads']);
+  assert.deepEqual(Array.from(app.network().enabled), ['ads', 'easylist']);
   assert.equal((await app.send({ type: 'GET_STATE' })).settings.enabled, true);
 });
 
@@ -95,4 +96,36 @@ test('content scripts and foreign senders cannot modify preferences', () => {
   const app = background();
   assert.equal(app.rejected({ id: 'test-extension', tab: { id: 1 } }), false);
   assert.equal(app.rejected({ id: 'other' }), false);
+});
+
+test('expanded domain rules cover common networks and preserve first-party resources', () => {
+  const rules = JSON.parse(fs.readFileSync(path.join(root, 'rules/easylist.json')));
+  const domains = rules.flatMap(rule => rule.condition.requestDomains);
+  assert.ok(domains.length > 40000);
+  assert.equal(new Set(domains).size, domains.length);
+  for (const domain of ['adform.net', 'paid.outbrain.com']) assert.ok(domains.includes(domain), domain);
+  for (const rule of rules) {
+    assert.equal(rule.condition.domainType, 'thirdParty');
+    assert.ok(!rule.condition.resourceTypes.includes('main_frame'));
+    assert.ok(rule.condition.requestDomains.every(domain => !['youtube.com', 'googlevideo.com', 'ytimg.com'].some(host => domain === host || domain.endsWith('.' + host))));
+  }
+});
+
+test('filter converter never broadens conditional or path-based entries', () => {
+  const output = execFileSync('python3', ['-c', `
+import json, runpy
+convert = runpy.run_path('scripts/update_ad_domains.py')['domains_from']
+sample = '''||ads.example^
+||ads.example^
+||conditional.example^$domain=news.example
+||typed.example^$script
+||path.example/ad.js
+@@||allowed.example^
+||googlevideo.com^
+||r1.googlevideo.com^
+! comment
+'''
+print(json.dumps(convert(sample)))
+`], { cwd: root, encoding: 'utf8' });
+  assert.deepEqual(JSON.parse(output), ['ads.example']);
 });

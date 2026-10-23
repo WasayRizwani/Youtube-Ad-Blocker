@@ -1,7 +1,11 @@
 {
   "name": "quietbrowse",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "scripts": { "test": "node --test tests/*.test.cjs", "test:browser": "node tests/browser.cjs" },
+  "scripts": {
+    "test": "node --test tests/*.test.cjs",
+    "test:browser": "node tests/browser.cjs",
+    "test:extension": "node tests/browser.cjs --extension"
+  },
   "engines": { "node": ">=22" }
 }
