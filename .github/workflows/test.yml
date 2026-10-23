@@ -1,0 +1,33 @@
+name: Extension checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  chrome:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CHROMIUM: google-chrome
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Check browser and Python
+        run: |
+          google-chrome --version
+          python3 --version
+      - name: Unit and response compatibility tests
+        run: npm test
+      - name: Browser response and playback fixtures
+        run: npm run test:browser
+      - name: Actual extension installation, request rules, and early injection
+        run: npm run test:extension

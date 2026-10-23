@@ -1,6 +1,6 @@
 (() => {
   'use strict';
-  const youtube = location.hostname === 'youtube.com' || location.hostname.endsWith('.youtube.com');
+  const youtube = /(^|\.)(youtube\.com|youtube-nocookie\.com)$/.test(location.hostname);
   const css = `
     ins.adsbygoogle, iframe[id^="google_ads_iframe"], div[id^="div-gpt-ad"],
     ytd-ad-slot-renderer, ytd-display-ad-renderer, ytd-promoted-sparkles-web-renderer,
@@ -14,46 +14,26 @@
   let style;
   let observer;
   let timer;
-  let mutedVideo;
-  let previousMute;
-  let attemptedAd;
-  function restoreAudio() {
-    if (mutedVideo) mutedVideo.muted = previousMute;
-    mutedVideo = null;
-    attemptedAd = null;
-  }
+  let playerFilter = { active: false, removed: 0 };
+  let lastSkip;
+  let lastSkipTime = 0;
   function handleAd() {
     const player = document.querySelector('#movie_player');
-    const video = player?.querySelector('video');
     const isAd = player?.classList.contains('ad-showing');
-    if (!isAd || !video) { restoreAudio(); return; }
-    if (mutedVideo !== video) {
-      restoreAudio();
-      mutedVideo = video;
-      previousMute = video.muted;
-      video.muted = true;
-    }
-    const skip = player.querySelector('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern');
-    if (skip && !skip.disabled && skip.getClientRects().length) {
-      skip.click();
-      return;
-    }
-    // Seek only when both the player state and visible ad-specific UI identify
-    // the media as an ad. Never seek normal, live, long, or unknown-duration video.
-    const adUI = player.querySelector('.ytp-ad-player-overlay, .ytp-ad-text, .ytp-ad-preview-container');
-    const duration = video.duration;
-    if (!adUI?.getClientRects().length || !video.currentSrc || !Number.isFinite(duration) ||
-        duration <= 0 || duration > 180 || video.readyState < 2 || video.seeking ||
-        !video.seekable.length || video.seekable.end(video.seekable.length - 1) < duration - 0.1) return;
-    const key = `${video.currentSrc}:${duration}`;
-    if (attemptedAd?.video === video && attemptedAd.key === key) return;
-    attemptedAd = { video, key };
-    // Let the native player finish the ad; never synthesize an 'ended' event.
-    // Some players disallow seeking ads. In that case retain the mute fallback.
-    try { video.currentTime = Math.max(video.currentTime, duration - 0.05); } catch { /* not seekable */ }
+    if (!isAd) { lastSkip = null; return; }
+    const skip = [...player.querySelectorAll('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern')]
+      .find(button => !button.disabled && button.getAttribute('aria-disabled') !== 'true' &&
+        button.getClientRects().length && getComputedStyle(button).visibility !== 'hidden');
+    if (!skip) return;
+    const now = performance.now();
+    if (lastSkip === skip && now - lastSkipTime < 1000) return;
+    lastSkip = skip;
+    lastSkipTime = now;
+    skip.click();
   }
   function refresh() {
     const active = settings.enabled && !QuietBrowse.isAllowed(location.hostname, settings);
+    if (youtube) window.postMessage({ source: 'quietbrowse-control', enabled: active }, location.origin);
     if (!active) {
       style?.remove();
       style = null;
@@ -61,10 +41,14 @@
       observer = null;
       clearInterval(timer);
       timer = null;
-      restoreAudio();
+      lastSkip = null;
       return;
     }
     if (!style) {
+      if (!document.documentElement) {
+        document.addEventListener('DOMContentLoaded', refresh, { once: true });
+        return;
+      }
       style = document.createElement('style');
       style.textContent = css;
       (document.head || document.documentElement).append(style);
@@ -82,9 +66,20 @@
       refresh();
     }
   });
+  window.addEventListener('message', event => {
+    if (event.source !== window || event.data?.source !== 'quietbrowse-youtube-status') return;
+    const report = event.data;
+    playerFilter = { active: report.active === true,
+      removed: Number.isSafeInteger(report.removed) && report.removed >= 0 ? report.removed : 0 };
+  });
+  chrome.runtime?.onMessage?.addListener((message, sender, respond) => {
+    if (sender.id !== chrome.runtime.id || message.type !== 'GET_PAGE_STATUS') return false;
+    respond({ enabled: settings.enabled && !QuietBrowse.isAllowed(location.hostname, settings),
+      youtube, playerFilter });
+    return false;
+  });
   chrome.storage.local.get('settings').then(result => {
     settings = QuietBrowse.normalize(result.settings);
     refresh();
   });
-  addEventListener('pagehide', restoreAudio);
 })();

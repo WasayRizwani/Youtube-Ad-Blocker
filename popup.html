@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <header><span class="mark" aria-hidden="true">Q</span><div><h1>QuietBrowse</h1><p>Less noise. More web.</p></div></header>
+  <header><span class="mark" aria-hidden="true">Q</span><div><h1>QuietBrowse</h1><p>Less noise. More web. <span id="version"></span></p></div></header>
   <main>
     <label class="setting"><span>Block ads</span><input id="enabled" type="checkbox" role="switch" disabled></label>
     <section><p class="eyebrow">CURRENT WEBSITE</p><p id="host">Loading…</p>
@@ -15,7 +15,9 @@
       <p class="hint">Also applies to subdomains. If a site has trouble, allow ads here and reload.</p>
     </section>
     <p id="status" role="status" aria-live="polite"></p>
+    <p id="protection" role="status" aria-live="polite">Checking protection…</p>
     <button id="reload" type="button" disabled>Reload this tab</button>
+    <details><summary>Protection details</summary><p id="diagnostics">Checking…</p></details>
     <details><summary>Allowed websites</summary><ul id="exceptions"></ul></details>
   </main>
   <footer>YouTube ad handling is best effort. Some ads may still appear.</footer>

@@ -28,24 +28,31 @@ test('network exceptions cover frame requests and their resources', () => {
 test('packaged files exist and ad rules preserve top-level navigation and video CDN', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json')));
   assert.equal(manifest.manifest_version, 3);
+  assert.equal(manifest.version, JSON.parse(fs.readFileSync(path.join(root, 'package.json'))).version);
+  assert.ok(manifest.permissions.includes('scripting'));
   for (const file of [manifest.background.service_worker, manifest.action.default_popup,
     ...manifest.content_scripts.flatMap(item => item.js), ...manifest.declarative_net_request.rule_resources.map(item => item.path)]) {
     assert.ok(fs.statSync(path.join(root, file)).isFile(), file);
   }
+  assert.ok(fs.statSync(path.join(root, core.youtubeScript(core.normalize()).js[0])).isFile());
   const rules = JSON.parse(fs.readFileSync(path.join(root, 'rules/ads.json')));
   assert.equal(new Set(rules.map(rule => rule.id)).size, rules.length);
   for (const rule of rules) assert.ok(!rule.condition.resourceTypes.includes('main_frame'));
   assert.ok(!JSON.stringify(rules).includes('googlevideo.com'));
 });
 
-function background() {
+function background(options = {}) {
   let listener;
   let saved;
   let rules = [];
   let enabled = ['ads'];
   let fail = false;
+  let scripts = [];
+  let failScript = options.failRegistration === true;
   const chrome = {
-    runtime: { id: 'test-extension', onMessage: { addListener(fn) { listener = fn; } } },
+    runtime: { id: 'test-extension', getURL: file => `chrome-extension://test-extension/${file}`,
+      getManifest: () => ({ version: '0.3.0' }),
+      onMessage: { addListener(fn) { listener = fn; } } },
     storage: { local: {
       async get() { return { settings: saved }; },
       async set(value) { if (fail) { fail = false; throw new Error('Storage failure'); } saved = value.settings; }
@@ -55,15 +62,25 @@ function background() {
       async updateDynamicRules(value) { rules = value.addRules; },
       async updateEnabledRulesets(value) { enabled = value.enableRulesetIds; }
     },
+    scripting: {
+      async getRegisteredContentScripts() { return structuredClone(scripts); },
+      async registerContentScripts(value) {
+        if (failScript) { failScript = false; throw new Error('Script registration failed'); }
+        scripts = structuredClone(value);
+      },
+      async updateContentScripts(value) { scripts = structuredClone(value); },
+      async unregisterContentScripts() { scripts = []; }
+    },
     action: { async setBadgeText() {}, async setBadgeBackgroundColor() {} }
   };
   vm.runInNewContext(fs.readFileSync(path.join(root, 'background.js'), 'utf8'), {
     chrome, QuietBrowse: core, importScripts() {}, console: { error() {} }
   });
   return {
-    send: message => new Promise(resolve => listener(message, { id: 'test-extension' }, resolve)),
+    send: message => new Promise(resolve => listener(message, { id: 'test-extension', url: 'chrome-extension://test-extension/popup.html' }, resolve)),
     rejected: sender => listener({ type: 'SET_ENABLED', enabled: false }, sender, () => {}),
     network: () => ({ rules, enabled }),
+    scripts: () => scripts,
     failNextSave() { fail = true; }
   };
 }
@@ -82,6 +99,46 @@ test('background persists switches and removes inherited site exceptions', async
   assert.deepEqual(Array.from(app.network().enabled), ['ads', 'easylist']);
 });
 
+test('YouTube MAIN script runs early, persists, and excludes only allowed websites', () => {
+  const script = core.youtubeScript(core.normalize());
+  assert.equal(script.world, 'MAIN');
+  assert.equal(script.runAt, 'document_start');
+  assert.equal(script.persistAcrossSessions, true);
+  assert.equal(script.allFrames, false);
+  assert.deepEqual(core.youtubeScript(core.normalize({ enabled: false })), null);
+  assert.deepEqual(core.youtubeScript(core.normalize({ allowedHosts: ['youtube.com', 'youtube-nocookie.com'] })), null);
+  const partiallyAllowed = core.youtubeScript(core.normalize({ allowedHosts: ['www.youtube.com', 'example.com'] }));
+  assert.deepEqual(partiallyAllowed.excludeMatches, ['*://*.www.youtube.com/*']);
+  assert.equal(partiallyAllowed.matches.length, 2);
+  assert.deepEqual(core.youtubeScript(core.normalize({ allowedHosts: ['youtube.com'] })).matches, ['*://*.youtube-nocookie.com/*']);
+});
+
+test('background keeps MAIN registration in sync with site exceptions and global switch', async () => {
+  const app = background();
+  const health = await app.send({ type: 'GET_HEALTH' });
+  assert.equal(health.health.youtubeRegistered, true);
+  assert.equal(health.health.error, null);
+  assert.equal(health.health.version, '0.3.0');
+  await app.send({ type: 'SET_SITE_ALLOWED', host: 'www.youtube.com', allowed: true });
+  assert.deepEqual(Array.from(app.scripts()[0].excludeMatches), ['*://*.www.youtube.com/*']);
+  await app.send({ type: 'SET_ENABLED', enabled: false });
+  assert.equal(app.scripts().length, 0);
+  await app.send({ type: 'SET_ENABLED', enabled: true });
+  assert.deepEqual(Array.from(app.scripts()[0].excludeMatches), ['*://*.www.youtube.com/*']);
+  await app.send({ type: 'SET_SITE_ALLOWED', host: 'www.youtube.com', allowed: false });
+  assert.equal(app.scripts()[0].excludeMatches.length, 0);
+});
+
+test('initialization errors remain visible in health instead of reporting a ready filter', async () => {
+  const app = background({ failRegistration: true });
+  const result = await app.send({ type: 'GET_HEALTH' });
+  assert.equal(result.health.youtubeRegistered, false);
+  assert.equal(result.health.error, 'Script registration failed');
+  await app.send({ type: 'SET_ENABLED', enabled: true });
+  assert.equal((await app.send({ type: 'GET_HEALTH' })).health.error, null);
+  assert.equal(app.scripts().length, 1);
+});
+
 test('failed persistence restores network configuration and queue remains usable', async () => {
   const app = background();
   await app.send({ type: 'GET_STATE' });
@@ -96,6 +153,7 @@ test('content scripts and foreign senders cannot modify preferences', () => {
   const app = background();
   assert.equal(app.rejected({ id: 'test-extension', tab: { id: 1 } }), false);
   assert.equal(app.rejected({ id: 'other' }), false);
+  assert.equal(app.rejected({ id: 'test-extension', url: 'https://www.youtube.com/watch?v=test' }), false);
 });
 
 test('expanded domain rules cover common networks and preserve first-party resources', () => {

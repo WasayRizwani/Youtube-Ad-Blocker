@@ -12,6 +12,8 @@ section { border-top: 1px solid #d5e2db; margin-top: 8px; padding-top: 16px; }
 .eyebrow { font-size: 10px; letter-spacing: 1.5px; color: #526b64; }
 #host { font-weight: 600; overflow-wrap: anywhere; margin: 4px 0; }
 #status { min-height: 40px; font-size: 12px; margin-top: 12px; }
+#protection { font-size: 12px; margin-bottom: 12px; }
+#diagnostics { margin-top: 8px; overflow-wrap: anywhere; }
 button { background: #196958; color: white; border: 0; border-radius: 8px; padding: 10px 14px; cursor: pointer; font: inherit; }
 #reload { width: 100%; }
 button:disabled { opacity: .5; cursor: default; }

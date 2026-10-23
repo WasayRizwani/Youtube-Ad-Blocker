@@ -35,7 +35,21 @@
       }
     ]);
   }
-  const api = { DEFAULTS, hostname, normalize, isAllowed, exceptionRules };
+  function youtubeScript(settings) {
+    if (!settings.enabled) return null;
+    const roots = ['youtube.com', 'youtube-nocookie.com'];
+    const included = roots.filter(host => !isAllowed(host, settings));
+    if (!included.length) return null;
+    return {
+      id: 'quietbrowse-youtube', js: ['youtube-main.js'],
+      matches: included.map(host => `*://*.${host}/*`),
+      excludeMatches: settings.allowedHosts.filter(host => included.some(base => host.endsWith(`.${base}`)))
+        .map(host => `*://*.${host}/*`),
+      runAt: 'document_start', world: 'MAIN', allFrames: false,
+      persistAcrossSessions: true
+    };
+  }
+  const api = { DEFAULTS, hostname, normalize, isAllowed, exceptionRules, youtubeScript };
   root.QuietBrowse = api;
   if (typeof module !== 'undefined') module.exports = api;
 })(globalThis);
