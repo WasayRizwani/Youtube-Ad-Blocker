@@ -29,8 +29,11 @@ async function apply(settings) {
     disableRulesetIds: settings.enabled ? [] : RULESETS
   });
   await configureYouTube(settings);
+  await chrome.declarativeNetRequest.setExtensionActionOptions({
+    displayActionCountAsBadgeText: settings.enabled
+  });
   await chrome.action.setBadgeText({ text: settings.enabled ? '' : 'OFF' });
-  await chrome.action.setBadgeBackgroundColor({ color: '#64748b' });
+  await chrome.action.setBadgeBackgroundColor({ color: settings.enabled ? '#196958' : '#64748b' });
 }
 async function read() {
   return QuietBrowse.normalize((await chrome.storage.local.get('settings')).settings);

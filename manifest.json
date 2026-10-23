@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "minimum_chrome_version": "111",
   "name": "QuietBrowse",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Conservative ad blocking with site exceptions and best-effort YouTube ad handling.",
   "permissions": ["declarativeNetRequest", "storage", "activeTab", "scripting"],
   "host_permissions": ["http://*/*", "https://*/*"],

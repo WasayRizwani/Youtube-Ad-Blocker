@@ -331,3 +331,108 @@ test('unrelated hosts and repeat injection leave platform behavior intact', () =
   page.run(source);
   assert.equal(page.context.fetch, fetch);
 });
+
+async function latestReport(page) {
+  await new Promise(resolve => queueMicrotask(resolve));
+  return page.messages.at(-1);
+}
+
+test('response counter counts successful responses rather than individual ad fields or repeated reads', async () => {
+  const page = harness();
+  page.context.payload = player();
+  page.run('window.ytInitialPlayerResponse = payload');
+  let report = await latestReport(page);
+  assert.equal(report.removed, 3);
+  assert.equal(report.filteredResponses, 1);
+  for (let i = 0; i < 10; i++) page.run('ytInitialPlayerResponse.videoDetails.videoId');
+  assert.equal((await latestReport(page)).filteredResponses, 1);
+
+  await page.context.fetch('https://www.youtube.com/youtubei/v1/player');
+  assert.equal((await latestReport(page)).filteredResponses, 2);
+
+  const xhr = new page.context.XMLHttpRequest();
+  xhr.open('POST', '/youtubei/v1/player'); xhr.finish(player());
+  for (let i = 0; i < 10; i++) {
+    assert.equal(JSON.parse(xhr.responseText).adSlots, undefined);
+    assert.equal(xhr.response, xhr.responseText);
+  }
+  assert.equal((await latestReport(page)).filteredResponses, 3);
+  xhr.open('POST', '/youtubei/v1/player'); xhr.finish(player());
+  void xhr.response;
+  assert.equal((await latestReport(page)).filteredResponses, 4);
+});
+
+test('serialized initial getters and stable frozen response views do not inflate response count', async () => {
+  const page = harness();
+  page.context.text = JSON.stringify(player());
+  page.run('window.ytplayer = {config: {args: {player_response: text}}}');
+  for (let i = 0; i < 10; i++) {
+    assert.equal(page.run('JSON.parse(ytplayer.config.args.player_response).adSlots'), undefined);
+  }
+  assert.equal((await latestReport(page)).filteredResponses, 1);
+  const next = player(); next.videoDetails.videoId = 'next-video';
+  page.context.nextText = JSON.stringify(next);
+  page.run('ytplayer.config.args.player_response = nextText');
+  for (let i = 0; i < 10; i++) page.run('ytplayer.config.args.player_response');
+  assert.equal((await latestReport(page)).filteredResponses, 2);
+
+  page.context.frozen = Object.freeze(player());
+  page.run('window.ytInitialPlayerResponse = frozen');
+  for (let i = 0; i < 10; i++) page.run('ytInitialPlayerResponse');
+  assert.equal((await latestReport(page)).filteredResponses, 3);
+});
+
+test('empty, malformed, unrelated, and disabled responses never increase the response counter', async () => {
+  const page = harness();
+  for (const value of [{}, { adPlacements: [], playerAds: null, adSlots: {} }, 'not JSON']) {
+    page.factory(() => page.response(value));
+    await page.context.fetch('https://www.youtube.com/youtubei/v1/player');
+  }
+  page.factory(() => page.response(player(), 'https://www.youtube.com/profile'));
+  await page.context.fetch('https://www.youtube.com/profile');
+  assert.equal((await latestReport(page)).filteredResponses, 0);
+
+  page.control(false);
+  page.factory(() => page.response(player()));
+  assert.ok((await (await page.context.fetch('https://www.youtube.com/youtubei/v1/player')).json()).adSlots);
+  page.context.payload = player(); page.run('window.ytInitialPlayerResponse = payload');
+  assert.ok(page.run('ytInitialPlayerResponse.adSlots'));
+  const xhr = new page.context.XMLHttpRequest();
+  xhr.open('POST', '/youtubei/v1/player'); xhr.finish(player());
+  assert.ok(JSON.parse(xhr.responseText).adSlots);
+  assert.equal((await latestReport(page)).filteredResponses, 0);
+});
+
+test('a response containing multiple player wrappers is counted once and counters reset for new documents', async () => {
+  const page = harness();
+  page.factory(() => page.response([{ playerResponse: player() }, { player_response: player() }]));
+  const result = await (await page.context.fetch('https://www.youtube.com/youtubei/v1/player')).json();
+  assert.equal(result[0].playerResponse.adSlots, undefined);
+  assert.equal(result[1].player_response.adSlots, undefined);
+  const report = await latestReport(page);
+  assert.equal(report.removed, 6);
+  assert.equal(report.filteredResponses, 1);
+  const nextDocument = harness();
+  assert.equal((await latestReport(nextDocument)).filteredResponses, 0);
+});
+
+test('counter inspection cannot prevent removal of opaque page-owned ad values', () => {
+  const opaque = new Proxy({}, { ownKeys() { throw new Error('opaque ad data'); } });
+  const input = { adSlots: opaque, streamingData: { formats: ['ordinary'] } };
+  const result = prunePlayer(input);
+  assert.equal(result.value.adSlots, undefined);
+  assert.equal(result.value.streamingData, input.streamingData);
+  assert.equal(result.removed, 1);
+  assert.equal(result.hasAdData, false);
+  let descriptorReads = 0;
+  const dynamic = new Proxy({ adSlots: [{}], streamingData: input.streamingData }, {
+    getOwnPropertyDescriptor(target, key) {
+      if (key === 'adSlots' && ++descriptorReads === 2) throw new Error('counter-only inspection failed');
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    }
+  });
+  const filtered = prunePlayer(dynamic);
+  assert.equal(filtered.value.adSlots, undefined);
+  assert.equal(filtered.value.streamingData, input.streamingData);
+  assert.equal(filtered.removed, 1);
+});

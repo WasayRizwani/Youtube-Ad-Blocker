@@ -6,7 +6,38 @@ const reload = document.querySelector('#reload');
 let tab;
 let host;
 let busy = false;
+let currentSettings;
+let countGeneration = 0;
 document.querySelector('#version').textContent = `v${chrome.runtime.getManifest().version}`;
+async function refreshCounts(settings) {
+  const generation = ++countGeneration;
+  const requestCount = document.querySelector('#request-count');
+  const videoCount = document.querySelector('#video-count');
+  const note = document.querySelector('#count-note');
+  const youtube = !!host && /(^|\.)(youtube\.com|youtube-nocookie\.com)$/.test(host);
+  document.querySelector('#video-counter').hidden = !youtube;
+  document.querySelector('.counters').classList.toggle('single', !youtube);
+  if (!host || !Number.isInteger(tab?.id)) {
+    requestCount.textContent = videoCount.textContent = '—';
+    note.textContent = 'Open a website to see its counts.';
+    return;
+  }
+  const [badge, page] = await Promise.all([
+    settings.enabled ? chrome.action.getBadgeText({ tabId: tab.id }).catch(() => null) : Promise.resolve(null),
+    youtube ? chrome.tabs.sendMessage(tab.id, { type: 'GET_PAGE_STATUS' }).catch(() => null) : Promise.resolve(null)
+  ]);
+  if (generation !== countGeneration) return;
+  // Chrome returns '?' when the count is not available with this tab grant.
+  // An empty badge is zero only with native counting enabled and no custom
+  // per-tab badge. QuietBrowse never sets custom per-tab badge text.
+  const value = badge === '' ? 0 : typeof badge === 'string' && /^\d+$/.test(badge) ? Number(badge) : null;
+  requestCount.textContent = Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString() : '—';
+  const filtered = page?.playerFilter?.filteredResponses;
+  videoCount.textContent = Number.isSafeInteger(filtered) && filtered >= 0 ? filtered.toLocaleString() : '—';
+  note.textContent = !settings.enabled ? 'Protection paused. Page totals resume when enabled.' :
+    value === null ? 'Request count unavailable for this tab. Open the popup using the extension’s toolbar button.' :
+      'This page · resets on reload. Several requests or responses can belong to one ad.';
+}
 async function refreshProtection(settings) {
   const protection = document.querySelector('#protection');
   const details = document.querySelector('#diagnostics');
@@ -42,6 +73,7 @@ async function refreshProtection(settings) {
   }
 }
 function render(settings) {
+  currentSettings = settings;
   enabled.checked = settings.enabled;
   enabled.disabled = busy;
   allowed.checked = !!host && QuietBrowse.isAllowed(host, settings);
@@ -75,7 +107,10 @@ async function update(message) {
   finally {
     busy = false;
     const response = await chrome.runtime.sendMessage({ type: 'GET_STATE' });
-    if (response.settings) { render(response.settings); await refreshProtection(response.settings); }
+    if (response.settings) {
+      render(response.settings);
+      await Promise.all([refreshProtection(response.settings), refreshCounts(response.settings)]);
+    }
   }
 }
 enabled.addEventListener('change', () => update({ type: 'SET_ENABLED', enabled: enabled.checked }));
@@ -89,7 +124,11 @@ reload.addEventListener('click', () => chrome.tabs.reload(tab.id).then(() => win
     const response = await chrome.runtime.sendMessage({ type: 'GET_STATE' });
     if (response.error) throw new Error(response.error);
     render(response.settings);
-    await refreshProtection(response.settings);
+    await Promise.all([refreshProtection(response.settings), refreshCounts(response.settings)]);
     status.textContent = host ? 'Your preferences stay in this browser.' : 'Chrome internal pages and the Web Store cannot be filtered.';
   } catch (error) { status.textContent = error.message; }
 })();
+const counterTimer = setInterval(() => {
+  if (!busy && currentSettings) refreshCounts(currentSettings).catch(() => {});
+}, 2000);
+addEventListener('pagehide', () => { clearInterval(counterTimer); countGeneration++; });

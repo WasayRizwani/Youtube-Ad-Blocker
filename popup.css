@@ -1,11 +1,18 @@
 :root { color-scheme: light; font: 14px/1.5 system-ui, sans-serif; color: #16312e; background: #f5f8f6; }
-body { width: 320px; margin: 0; }
+body { width: 320px; max-height: 580px; overflow-y: auto; margin: 0; }
 header { display: flex; gap: 12px; align-items: center; padding: 24px 20px; }
 .mark { background: #196958; color: white; padding: 8px 14px; border-radius: 14px; font-size: 24px; font-weight: 700; }
 h1 { margin: 0; font-size: 22px; letter-spacing: -1px; }
 p { margin: 0; }
 header p, .hint, footer { color: #526b64; font-size: 12px; }
 main { padding: 0 20px 20px; }
+.counters { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 0 0 12px; padding: 0 0 16px; border: 0; border-bottom: 1px solid #d5e2db; }
+.counters.single { grid-template-columns: 1fr; }
+.counter { display: flex; flex-direction: column; gap: 4px; padding: 12px; background: #e8efeb; border-radius: 10px; }
+.counter[hidden] { display: none; }
+.counter strong { font-size: 30px; font-variant-numeric: tabular-nums; line-height: 1.1; overflow-wrap: anywhere; }
+.counter span { font-size: 11px; color: #526b64; }
+#count-note { grid-column: 1 / -1; }
 .setting { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; font-weight: 600; }
 input { accent-color: #196958; width: 20px; height: 20px; cursor: pointer; }
 section { border-top: 1px solid #d5e2db; margin-top: 8px; padding-top: 16px; }

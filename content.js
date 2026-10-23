@@ -14,7 +14,7 @@
   let style;
   let observer;
   let timer;
-  let playerFilter = { active: false, removed: 0 };
+  let playerFilter = { active: false, removed: 0, filteredResponses: null };
   let lastSkip;
   let lastSkipTime = 0;
   function handleAd() {
@@ -70,7 +70,8 @@
     if (event.source !== window || event.data?.source !== 'quietbrowse-youtube-status') return;
     const report = event.data;
     playerFilter = { active: report.active === true,
-      removed: Number.isSafeInteger(report.removed) && report.removed >= 0 ? report.removed : 0 };
+      removed: Number.isSafeInteger(report.removed) && report.removed >= 0 ? report.removed : 0,
+      filteredResponses: Number.isSafeInteger(report.filteredResponses) && report.filteredResponses >= 0 ? report.filteredResponses : null };
   });
   chrome.runtime?.onMessage?.addListener((message, sender, respond) => {
     if (sender.id !== chrome.runtime.id || message.type !== 'GET_PAGE_STATUS') return false;

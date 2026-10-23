@@ -50,6 +50,7 @@ function background(options = {}) {
   let fail = false;
   let scripts = [];
   let failScript = options.failRegistration === true;
+  let actionCountEnabled = false;
   const chrome = {
     runtime: { id: 'test-extension', getURL: file => `chrome-extension://test-extension/${file}`,
       getManifest: () => ({ version: VERSION }),
@@ -61,7 +62,8 @@ function background(options = {}) {
     declarativeNetRequest: {
       async getDynamicRules() { return rules; },
       async updateDynamicRules(value) { rules = value.addRules; },
-      async updateEnabledRulesets(value) { enabled = value.enableRulesetIds; }
+      async updateEnabledRulesets(value) { enabled = value.enableRulesetIds; },
+      async setExtensionActionOptions(value) { actionCountEnabled = value.displayActionCountAsBadgeText; }
     },
     scripting: {
       async getRegisteredContentScripts() { return structuredClone(scripts); },
@@ -82,6 +84,7 @@ function background(options = {}) {
     rejected: sender => listener({ type: 'SET_ENABLED', enabled: false }, sender, () => {}),
     network: () => ({ rules, enabled }),
     scripts: () => scripts,
+    counterEnabled: () => actionCountEnabled,
     failNextSave() { fail = true; }
   };
 }
@@ -89,15 +92,18 @@ function background(options = {}) {
 test('background persists switches and removes inherited site exceptions', async () => {
   const app = background();
   assert.equal((await app.send({ type: 'GET_STATE' })).settings.enabled, true);
+  assert.equal(app.counterEnabled(), true);
   await app.send({ type: 'SET_SITE_ALLOWED', host: 'example.com', allowed: true });
   assert.equal(app.network().rules.length, 2);
   await app.send({ type: 'SET_SITE_ALLOWED', host: 'www.example.com', allowed: false });
   assert.equal(app.network().rules.length, 0);
   await app.send({ type: 'SET_ENABLED', enabled: false });
   assert.equal(app.network().enabled.length, 0);
+  assert.equal(app.counterEnabled(), false);
   assert.equal((await app.send({ type: 'GET_STATE' })).settings.enabled, false);
   await app.send({ type: 'SET_ENABLED', enabled: true });
   assert.deepEqual(Array.from(app.network().enabled), ['ads', 'easylist']);
+  assert.equal(app.counterEnabled(), true);
 });
 
 test('YouTube MAIN script runs early, persists, and excludes only allowed websites', () => {

@@ -10,7 +10,7 @@ A dependency-free Chrome extension (Manifest V3, Chrome 111+) for reducing ads w
 4. Pin **QuietBrowse** in Chrome's extensions menu, then reload existing website tabs.
 
 To upgrade, replace the files in the folder you previously loaded, click **Reload**
-on the extension card, and confirm **0.3.1** appears on the card and in the popup.
+on the extension card, and confirm **0.4.0** appears on the card and in the popup.
 Allow the extension access to YouTube in Chrome's extension settings, then reload
 YouTube. If you choose a different folder, remove the old copy first so two copies
 do not run together.
@@ -23,9 +23,12 @@ There is no build step, account, API key, or npm installation required. Changes 
 - **Allow ads on this site** exempts the current hostname and its subdomains from both request blocking and cosmetic filtering. Use it if videos, login, checkout, or another feature stops working.
 - **Allowed websites** lists exceptions and lets you remove them.
 - **Reload this tab** applies request changes to the whole page. Already blocked resources cannot be restored without reloading.
+- **Ad requests blocked** shows Chrome's blocked-request count for the current page. The same count appears on the pinned extension's toolbar badge. An empty badge means zero; an unavailable count is displayed as **—**, never as a guessed zero. The toolbar shows **OFF** when global protection is disabled.
+- **YouTube ad responses filtered** counts supported, nonempty player responses whose ad data was removed. It is separate from blocked requests and from the removed-field diagnostic: removing three ad fields from one response does not mean three ads were blocked. Empty ad fields and repeated reads of the same initial response do not increase this count.
+- Popup counts update every two seconds while it is open. Counts reset on a full page navigation or reload; navigation between YouTube videos without a full reload keeps the current document's total. These are page activity counts, not lifetime totals or counts of distinct commercials. Several requests or filtered responses can belong to one ad, so the two counters are not added together.
 - The popup distinguishes a loaded player script from observed response filtering. **Player script loaded; ad blocking is not confirmed** means no ad-data fields were removed. **Player ad data was filtered on this page** means the removed-field count is positive; this is still not proof that ads were blocked. If the script is inactive, reload the tab and check extension site access.
 
-Version 0.3.1 corrects this status reporting only. It does not add an ad-blocking fix.
+Version 0.4.0 adds these visible counts without changing which requests or player ad fields are filtered.
 
 ## Behavior and limitations
 
@@ -43,7 +46,7 @@ Field and endpoint selection was researched against [uAssets filtering reference
 
 The bundled list does not update remotely. To reproduce it, run `python3 scripts/update_ad_domains.py`; its source revision, SHA-256, and rule counts are recorded in `rules/easylist-source.json`. Updating the pinned revision requires reviewing and rebuilding the list. The derived list is licensed under CC BY-SA 3.0; source and attribution are in [THIRD_PARTY.md](THIRD_PARTY.md).
 
-The extension has no analytics or remote backend. Preferences stay in `chrome.storage.local` and do not sync between devices. Website access is needed for filtering; `activeTab` identifies the current website when you open the popup.
+The extension has no analytics or remote backend. Preferences stay in `chrome.storage.local` and do not sync between devices. Website access is needed for filtering; `activeTab` identifies the current website and permits reading its native request count when you open the popup. Counting adds no permissions and uploads no statistics.
 
 ## Development and checks
 
@@ -57,9 +60,9 @@ npm run test:extension
 
 The browser checks also require `chromium` on PATH (or a `CHROMIUM` executable override). They run a disposable headless browser profile against local fixtures and clean it up afterward. On Linux they use `--no-sandbox`, intended only for a trusted development container.
 
-The unit suite checks response pruning and native API behavior, registration/exclusions, site boundaries, preference persistence, error recovery, sender validation, and filter conversion safety.
+The unit suite checks response pruning and native API behavior, response-counter deduplication, native badge configuration, registration/exclusions, site boundaries, preference persistence, error recovery, sender validation, and filter conversion safety.
 
-`test:browser` runs the production page script and isolated content script in separate Chromium worlds. A synthetic YouTube origin is served entirely from local fixtures through DevTools request interception: no live YouTube page or advertising server is contacted. Tests exercise inline player bootstrap, native fetch/XHR, preservation of normal response data, the preference bridge, visible Skip buttons, cosmetics, popup diagnostics, and playable media transitioning under stale ad markers. These fixtures do **not** validate installed-extension permissions, real network-rule enforcement, or live YouTube compatibility.
+`test:browser` runs the production page script and isolated content script in separate Chromium worlds. A synthetic YouTube origin is served entirely from local fixtures through DevTools request interception: no live YouTube page or advertising server is contacted. Tests exercise inline player bootstrap, native fetch/XHR, preservation of normal response data, the preference bridge, visible Skip buttons, cosmetics, popup diagnostics, separate request/response counts, automatic count updates, unavailable-count handling, and playable media transitioning under stale ad markers. These fixtures do **not** validate installed-extension permissions, real network-rule enforcement, or live YouTube compatibility.
 
 `test:extension` separately loads the actual unpacked extension and checks real request blocking, site exceptions, the global switch, early MAIN-world registration, and content diagnostics against local fixtures. It intentionally fails when browser administration prevents extension loading. It still does not establish live YouTube compatibility.
 
@@ -69,7 +72,7 @@ In this cloud environment, unpacked installation is blocked by `ExtensionInstall
 
 For live validation in a Chrome profile that permits developer extensions:
 
-1. Load version 0.3.1, grant YouTube site access, and reload the tab. Check the popup's script status and removed-field count, plus the extension card and service worker console for errors. A loaded script with zero removals does not establish ad blocking.
+1. Load version 0.4.0, grant YouTube site access, and reload the tab. Check the popup's script status and separate counters, plus the extension card and service worker console for errors. A loaded script with zero removals does not establish ad blocking.
 2. On a page making a request to an included advertising domain, verify DevTools Network reports `ERR_BLOCKED_BY_CLIENT`, while the main content and normal controls work.
 3. Allow that site and reload; verify the same request is allowed and hidden containers return. Remove the exception to restore filtering. Repeat with the global switch off and on.
 4. Test YouTube playback, navigation between videos, captions, seeking, volume, playback speed, and visible Skip buttons. Verify regular content starts normally and a previously muted video stays muted.

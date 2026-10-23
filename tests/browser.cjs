@@ -193,6 +193,7 @@ const server = http.createServer((req, res) => {
     const content = mock + fs.readFileSync(path.join(root, 'core.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'content.js'), 'utf8');
     const session = await page(main, 'https://www.youtube.com/fixture', content);
     assertCleanPlayer(await evaluate(session, 'JSON.parse(inlinePlayerSnapshot)'));
+    await waitFor(session, 'fixtureReports.at(-1)?.filteredResponses === 1');
     console.log('PASS: MAIN prevention removes ad placements before inline player bootstrap; normal player data preserved');
     const fetchPlayer = `(async () => { const response = await fetch('/youtubei/v1/player?fixture=1', {method: 'POST', body: '{}'}); return {status: response.status, header: response.headers.get('x-fixture-header'), body: await response.json()}; })()`;
     const fetched = await evaluate(session, fetchPlayer);
@@ -205,6 +206,7 @@ const server = http.createServer((req, res) => {
     }
     assert.deepEqual(await evaluate(session, `fetch('/api/profile').then(response => response.json())`), unrelatedResponse);
     assert.deepEqual(await evaluate(session, `JSON.parse(${JSON.stringify(JSON.stringify(unrelatedResponse))})`), unrelatedResponse);
+    await waitFor(session, 'fixtureReports.at(-1)?.filteredResponses === 5');
     console.log('PASS: native XHR text/JSON player responses filtered; unrelated APIs and JSON parsing untouched');
     await evaluate(session, 'setPrefs({enabled: false, allowedHosts: []})', true);
     await waitFor(session, 'fixtureReports.some(report => report.active === false)');
@@ -260,8 +262,12 @@ const server = http.createServer((req, res) => {
     console.log('PASS: disabled cleanup restores cosmetic containers without changing the user mute preference');
     const popupMock = `
       let prefs = { enabled: true, allowedHosts: [] };
+      window.fixtureBadge = '17';
+      window.fixtureBadgeError = false;
+      window.fixtureFiltered = 2;
       globalThis.chrome = {
-        tabs: { query: async () => [{id: 1, url: 'https://www.youtube.com/watch?v=test'}], reload: async () => {}, sendMessage: async () => ({enabled: true, youtube: true, playerFilter: {active: true, removed: 3}}) },
+        action: { getBadgeText: async () => { if (window.fixtureBadgeError) throw new Error('Count unavailable'); return window.fixtureBadge; } },
+        tabs: { query: async () => [{id: 1, url: 'https://www.youtube.com/watch?v=test'}], reload: async () => {}, sendMessage: async () => ({enabled: true, youtube: true, playerFilter: {active: true, removed: 3, filteredResponses: window.fixtureFiltered}}) },
         runtime: { getManifest: () => ({version: ${JSON.stringify(currentVersion)}}), sendMessage: async msg => {
           if (msg.type === 'GET_HEALTH') return {health: {version: ${JSON.stringify(currentVersion)}, youtubeRegistered: true}};
           if (msg.type === 'SET_ENABLED') prefs.enabled = msg.enabled;
@@ -276,12 +282,29 @@ const server = http.createServer((req, res) => {
     await waitFor(popup, 'document.querySelector("#protection").textContent === "Player ad data was filtered on this page."');
     assert.equal(await evaluate(popup, 'document.querySelector("#version").textContent'), `v${currentVersion}`);
     assert.ok(await evaluate(popup, 'document.querySelector("#diagnostics").textContent.includes("3 ad-data fields")'));
+    await waitFor(popup, 'document.querySelector("#request-count").textContent === "17" && document.querySelector("#video-count").textContent === "2"');
+    assert.notEqual(await evaluate(popup, 'document.querySelector("#video-count").textContent'), '3');
+    await evaluate(popup, `window.fixtureBadge = ''; window.fixtureFiltered = 0; refreshCounts(prefs)`);
+    assert.equal(await evaluate(popup, 'document.querySelector("#request-count").textContent'), '0');
+    assert.equal(await evaluate(popup, 'document.querySelector("#video-count").textContent'), '0');
+    await evaluate(popup, `window.fixtureBadge = '?'; window.fixtureFiltered = 2; refreshCounts(prefs)`);
+    assert.equal(await evaluate(popup, 'document.querySelector("#request-count").textContent'), '—');
+    assert.ok(await evaluate(popup, 'document.querySelector("#count-note").textContent.includes("unavailable")'));
+    assert.equal(await evaluate(popup, 'document.querySelector("#video-count").textContent'), '2');
+    await evaluate(popup, `window.fixtureBadgeError = true; refreshCounts(prefs)`);
+    assert.equal(await evaluate(popup, 'document.querySelector("#request-count").textContent'), '—');
+    await evaluate(popup, `window.fixtureBadgeError = false; window.fixtureBadge = '18'; window.fixtureFiltered = null; refreshCounts(prefs)`);
+    assert.equal(await evaluate(popup, 'document.querySelector("#video-count").textContent'), '—');
+    await evaluate(popup, `window.fixtureBadge = '19'; window.fixtureFiltered = 3`);
+    await waitFor(popup, 'document.querySelector("#request-count").textContent === "19" && document.querySelector("#video-count").textContent === "3"');
+    console.log('PASS: popup shows separate request/response counts, updates automatically, and distinguishes zero from unavailable');
     await evaluate(popup, 'document.querySelector("#allowed").click()');
     await waitFor(popup, 'document.querySelector("#exceptions").textContent.includes("www.youtube.com")');
     await evaluate(popup, 'document.querySelector("#enabled").click()');
     await waitFor(popup, '!document.querySelector("#enabled").disabled && !document.querySelector("#enabled").checked');
+    await waitFor(popup, 'document.querySelector("#request-count").textContent === "—" && document.querySelector("#count-note").textContent.includes("paused")');
     console.log('PASS: popup website display, exception toggle, and global switch');
-    const unchangedPopup = await page(popupMock.replace('removed: 3', 'removed: 0'), `http://127.0.0.1:${port}/popup.html?unchanged=1`);
+    const unchangedPopup = await page(popupMock.replace('removed: 3', 'removed: 0').replace('fixtureFiltered = 2', 'fixtureFiltered = 0'), `http://127.0.0.1:${port}/popup.html?unchanged=1`);
     await waitFor(unchangedPopup, 'document.querySelector("#protection").textContent === "Player script loaded; ad blocking is not confirmed."');
     assert.ok(await evaluate(unchangedPopup, 'document.querySelector("#diagnostics").textContent.includes("0 ad-data fields")'));
     console.log('PASS: loaded script with zero removals does not claim ad filtering occurred');
@@ -289,7 +312,12 @@ const server = http.createServer((req, res) => {
     await waitFor(failingPopup, 'document.querySelector("#protection").textContent.includes("could not start")');
     assert.ok(await evaluate(failingPopup, 'document.querySelector("#diagnostics").textContent.includes("not registered")'));
     console.log('PASS: popup surfaces registration failure instead of claiming active protection');
-    console.log('11 browser fixture checks passed. Actual unpacked installation/DNR requires --extension; live YouTube remains unverified.');
+    const ordinaryPopup = await page(popupMock.replace('https://www.youtube.com/watch?v=test', 'https://news.example/article'), `http://127.0.0.1:${port}/popup.html?ordinary=1`);
+    await waitFor(ordinaryPopup, 'document.querySelector("#request-count").textContent === "17"');
+    assert.equal(await evaluate(ordinaryPopup, 'document.querySelector("#video-counter").hidden'), true);
+    assert.equal(await evaluate(ordinaryPopup, 'getComputedStyle(document.querySelector("#video-counter")).display'), 'none');
+    console.log('PASS: non-YouTube pages show the request counter without an irrelevant video-response card');
+    console.log('13 browser fixture checks passed. Actual unpacked installation/DNR requires --extension; live YouTube remains unverified.');
   } finally {
     clearTimeout(deadline);
     browser.kill();

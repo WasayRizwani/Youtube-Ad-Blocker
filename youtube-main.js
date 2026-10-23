@@ -10,11 +10,21 @@
     seen.add(input);
     const changes = new Map();
     let removed = 0;
+    let hasAdData = false;
     const write = (key, value, remove = false) => {
       changes.set(key, { value, remove });
     };
     for (const key of AD_FIELDS) {
       if (Object.prototype.hasOwnProperty.call(input, key)) {
+        // Empty placeholders are not an ad response. Read descriptors only:
+        // inspecting a page-owned getter must not introduce new side effects.
+        try {
+          const descriptor = Object.getOwnPropertyDescriptor(input, key);
+          const value = descriptor && 'value' in descriptor ? descriptor.value : null;
+          if (Array.isArray(value) ? value.length > 0 : value && typeof value === 'object' && Reflect.ownKeys(value).length > 0) {
+            hasAdData = true;
+          }
+        } catch { /* Counting must never stop the original field removal. */ }
         write(key, undefined, true);
         removed++;
       }
@@ -25,7 +35,11 @@
       let current;
       try { current = input[key]; } catch { continue; }
       const nested = typeof current === 'string' ? pruneText(current, depth + 1) : prunePlayer(current, depth + 1, seen);
-      if (nested.removed) { write(key, nested.value); removed += nested.removed; }
+      if (nested.removed) {
+        write(key, nested.value);
+        removed += nested.removed;
+        hasAdData ||= nested.hasAdData === true;
+      }
     }
     if (!removed) return { value: input, removed: 0 };
     const descriptors = Object.getOwnPropertyDescriptors(input);
@@ -37,7 +51,7 @@
           { value: change.value, writable: true, configurable: descriptor.configurable, enumerable: descriptor.enumerable };
       }
     }
-    return { value: Object.create(Object.getPrototypeOf(input), descriptors), removed };
+    return { value: Object.create(Object.getPrototypeOf(input), descriptors), removed, hasAdData };
   }
 
   function pruneText(text, depth = 0) {
@@ -45,13 +59,14 @@
     const prefix = /^\)\]\}'(?:\r?\n)?/.exec(text)?.[0] || '';
     try {
       const result = prunePayload(JSON.parse(text.slice(prefix.length)), depth);
-      return result.removed ? { value: prefix + JSON.stringify(result.value), removed: result.removed } : { value: text, removed: 0 };
+      return result.removed ? { value: prefix + JSON.stringify(result.value), removed: result.removed, hasAdData: result.hasAdData === true } : { value: text, removed: 0 };
     } catch { return { value: text, removed: 0 }; }
   }
 
   function prunePayload(input, depth = 0) {
     if (!Array.isArray(input)) return prunePlayer(input, depth);
     let removed = 0;
+    let hasAdData = false;
     const output = input.map(entry => {
       // PBJ watch responses wrap player data in top-level array entries. Never
       // delete similarly named fields from arbitrary array elements.
@@ -60,9 +75,10 @@
            !Object.prototype.hasOwnProperty.call(entry, 'player_response'))) return entry;
       const result = prunePlayer(entry, depth);
       removed += result.removed;
+      hasAdData ||= result.hasAdData === true;
       return result.value;
     });
-    return { value: removed ? output : input, removed };
+    return { value: removed ? output : input, removed, hasAdData };
   }
 
   if (typeof window === 'undefined' || typeof document === 'undefined') {
@@ -78,6 +94,8 @@
   // the extension background. The isolated content script updates live pages.
   let enabled = true;
   const sources = { initial: 0, fetch: 0, xhr: 0 };
+  let filteredResponses = 0;
+  const initialTextReads = new WeakMap();
   let statusQueued = false;
   function status() {
     if (statusQueued) return;
@@ -87,12 +105,17 @@
       try {
         window.postMessage({ source: 'quietbrowse-youtube-status', active: enabled,
           removed: sources.initial + sources.fetch + sources.xhr,
+          filteredResponses,
           sources: { ...sources } }, location.origin);
       } catch { /* The document may have navigated away. */ }
     });
   }
-  function record(result, source) {
-    if (result.removed) { sources[source] += result.removed; status(); }
+  function record(result, source, countResponse = true) {
+    if (result.removed) {
+      sources[source] += result.removed;
+      if (countResponse && result.hasAdData) filteredResponses++;
+      status();
+    }
     return result.value;
   }
   const initialCache = new WeakMap();
@@ -106,7 +129,7 @@
       (left[key] === right[key] ||
        (['playerResponse', 'player_response'].includes(key) && sameClean(left[key], right[key], depth + 1))));
   }
-  function initialValue(value) {
+  function initialValue(value, context) {
     try {
       if (value && typeof value === 'object') {
         if (!enabled) { restoreInitial(value); return value; }
@@ -117,14 +140,19 @@
         // its global and local references; a cloned getter view loses one side's
         // streamingData/metadata changes and can break subsequent playback.
         const clean = applyInitial(value, result.value);
-        if (clean === value) return record({ value, removed: result.removed }, 'initial');
+        if (clean === value) return record({ value, removed: result.removed, hasAdData: result.hasAdData }, 'initial');
         const previous = initialCache.get(value);
         if (previous && sameClean(previous, clean)) return previous;
         initialCache.set(value, clean);
-        return record({ value: clean, removed: result.removed }, 'initial');
+        return record({ value: clean, removed: result.removed, hasAdData: result.hasAdData }, 'initial');
       }
       if (!enabled) return value;
-      return record(pruneText(value), 'initial');
+      const result = pruneText(value);
+      // Legacy config getters can return the same serialized response on each
+      // read. Count its interception once per property until the value changes.
+      const repeatedText = typeof value === 'string' && context && initialTextReads.get(context) === value;
+      if (result.removed && typeof value === 'string' && context) initialTextReads.set(context, value);
+      return record(result, 'initial', !repeatedText);
     } catch { return value; }
   }
 
@@ -186,15 +214,16 @@
       if (descriptor && (!descriptor.configurable || descriptor.writable === false ||
           (descriptor.get && !descriptor.set))) return;
       let value = descriptor?.value;
+      const context = {};
       Object.defineProperty(object, key, {
         configurable: true,
         enumerable: descriptor?.enumerable ?? true,
         get() {
           const current = descriptor?.get ? Reflect.apply(descriptor.get, this, []) : value;
-          return transform(current);
+          return transform(current, context);
         },
         set(next) {
-          const transformed = transform(next);
+          const transformed = transform(next, context);
           if (descriptor?.set) Reflect.apply(descriptor.set, this, [transformed]);
           else value = transformed;
         }

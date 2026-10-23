@@ -9,6 +9,11 @@
 <body>
   <header><span class="mark" aria-hidden="true">Q</span><div><h1>QuietBrowse</h1><p>Less noise. More web. <span id="version"></span></p></div></header>
   <main>
+    <section class="counters" aria-label="Blocking counts">
+      <div class="counter"><strong id="request-count">—</strong><span>Ad requests blocked</span></div>
+      <div id="video-counter" class="counter"><strong id="video-count">—</strong><span>YouTube ad responses filtered</span></div>
+      <p id="count-note" class="hint">Counts for this page. Requests and video responses are separate measures.</p>
+    </section>
     <label class="setting"><span>Block ads</span><input id="enabled" type="checkbox" role="switch" disabled></label>
     <section><p class="eyebrow">CURRENT WEBSITE</p><p id="host">Loading…</p>
       <label class="setting"><span>Allow ads on this site</span><input id="allowed" type="checkbox" role="switch" disabled></label>
