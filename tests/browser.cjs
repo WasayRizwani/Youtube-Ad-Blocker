@@ -23,7 +23,6 @@ const playerResponse = {
   adSlots: [{adSlotRenderer: {slot: 'mid-roll'}}]
 };
 const unrelatedResponse = {profile: {name: 'Ad agency'}, adSlots: ['business-data'], adPlacements: ['keep']};
-const delayedResponses = new Map();
 const fixture = `<!doctype html><html><head><title>Fixture</title></head><body>
   <script>window.ytInitialPlayerResponse = ${JSON.stringify(playerResponse)}; window.inlinePlayerSnapshot = JSON.stringify(window.ytInitialPlayerResponse);</script>
   <main id="article">Normal article and controls stay visible.<button id="normal">Play</button></main>
@@ -38,15 +37,6 @@ const server = http.createServer((req, res) => {
     res.setHeader('Content-Type', 'text/plain'); res.end('Ad fixture reached');
   } else if (name === 'youtubei/v1/player' || name === 'youtubei/v1/next' || name === 'api/profile') {
     res.setHeader('Content-Type', 'application/json'); res.setHeader('X-Fixture-Header', 'preserved');
-    const token = new URL(req.url, 'http://localhost').searchParams.get('delayed');
-    if (token) {
-      // Test code releases the body only after the browser receives headers.
-      // This detects eager buffering without a wall-clock timing assertion.
-      delayedResponses.set(token, res);
-      res.on('close', () => delayedResponses.delete(token));
-      res.flushHeaders();
-      return;
-    }
     res.end(JSON.stringify(name === 'api/profile' ? unrelatedResponse : playerResponse));
   } else if (name.endsWith('.wav')) {
     // A small, native playable audio asset in a <video> element. Seeking must
@@ -107,15 +97,6 @@ const server = http.createServer((req, res) => {
         // endpoint matcher without contacting YouTube or bypassing TLS checks.
         const {request, requestId} = message.params;
         const url = new URL(request.url);
-        if (url.searchParams.has('delayed')) {
-          // DevTools routes this fixture to localhost without changing the URL
-          // observed by page scripts. The native browser receives a streaming
-          // HTTP response; fulfilling a buffered body could not test this race.
-          send('Fetch.continueRequest', {requestId,
-            url: `http://127.0.0.1:${port}${url.pathname}${url.search}`}, message.sessionId)
-            .catch(error => { console.error('Streaming fixture failure:', error); process.exitCode = 1; });
-          continue;
-        }
         fetch(`http://127.0.0.1:${port}${url.pathname}${url.search}`, {
           headers: request.headers.Range ? {Range: request.headers.Range} : {}
         }).then(async response => send('Fetch.fulfillRequest', {
@@ -208,7 +189,7 @@ const server = http.createServer((req, res) => {
       assert.deepEqual(value.captions, playerResponse.captions);
       assert.deepEqual(value.playbackTracking, playerResponse.playbackTracking);
     }
-    const main = `window.fixtureNativeFetch = window.fetch; window.fixtureReports = []; addEventListener('message', event => { if (event.data?.source === 'quietbrowse-youtube-status') fixtureReports.push(event.data); });\n` + fs.readFileSync(path.join(root, 'youtube-main.js'), 'utf8');
+    const main = `window.fixtureReports = []; addEventListener('message', event => { if (event.data?.source === 'quietbrowse-youtube-status') fixtureReports.push(event.data); });\n` + fs.readFileSync(path.join(root, 'youtube-main.js'), 'utf8');
     // Observe extension work in its isolated world, excluding the fixture's own
     // DOM queries. These counts catch regressions without timing thresholds.
     const contentProbe = `
@@ -249,85 +230,6 @@ const server = http.createServer((req, res) => {
     assert.deepEqual(await evaluate(session, `JSON.parse(${JSON.stringify(JSON.stringify(unrelatedResponse))})`), unrelatedResponse);
     await waitFor(session, 'fixtureReports.at(-1)?.filteredResponses === 5');
     console.log('PASS: native XHR text/JSON player responses filtered; unrelated APIs and JSON parsing untouched');
-    // This disposable profile's synthetic origin needs the ordinary browser
-    // permission to reach our loopback fixture. No live YouTube request is made.
-    for (const name of ['local-network-access', 'local-network', 'loopback-network']) {
-      await send('Browser.setPermission', {permission: {name},
-        setting: 'granted', origin: 'https://www.youtube.com'}).catch(error => {
-        // Older Chrome versions predate these permissions and do not require them.
-        if (!/Invalid PermissionDescriptor name|Unknown permission name/i.test(error.message)) throw error;
-      });
-    }
-    await evaluate(session, `
-      window.streamingHeaders = false;
-      window.streamingBody = null;
-      fetch('/youtubei/v1/player?delayed=ready').then(response => {
-        window.streamingResponse = response;
-        window.streamingHeaders = true;
-      }).catch(error => { window.streamingError = error.message; });
-      void 0;
-    `);
-    await waitFor(session, 'streamingHeaders || window.streamingError');
-    assert.equal(await evaluate(session, 'window.streamingError || null'), null);
-    assert.ok(delayedResponses.has('ready'), 'the server has not sent the body yet');
-    assert.equal(await evaluate(session, 'streamingResponse.bodyUsed'), false);
-    assert.equal(await evaluate(session, 'fixtureReports.at(-1).filteredResponses'), 5);
-    assert.equal(await evaluate(session, 'streamingResponse.url'), 'https://www.youtube.com/youtubei/v1/player?delayed=ready');
-    await evaluate(session, 'streamingResponse.json().then(value => { window.streamingBody = value; }); void 0;');
-    delayedResponses.get('ready').end(JSON.stringify(playerResponse));
-    await waitFor(session, 'streamingBody !== null');
-    assertCleanPlayer(await evaluate(session, 'streamingBody'));
-    await waitFor(session, 'fixtureReports.at(-1)?.filteredResponses === 6');
-    console.log('PASS: native fetch returns headers before the server releases the body; consumed player data is still filtered');
-    const consumed = await evaluate(session, `(async () => {
-      const response = await fetch('/youtubei/v1/player');
-      const blobCopy = response.clone();
-      const reader = response.body.getReader({mode: 'byob'});
-      const chunks = [];
-      while (true) {
-        const {value, done} = await reader.read(new Uint8Array(37));
-        if (value?.byteLength) chunks.push(...value);
-        if (done) break;
-      }
-      return {stream: JSON.parse(new TextDecoder().decode(new Uint8Array(chunks))),
-        blob: JSON.parse(await (await blobCopy.blob()).text())};
-    })()`);
-    assertCleanPlayer(consumed.stream);
-    assertCleanPlayer(consumed.blob);
-    await waitFor(session, 'fixtureReports.at(-1)?.filteredResponses === 7');
-    console.log('PASS: native byte-stream readers and cloned blob consumers receive the same filtered body and count once');
-    await evaluate(session, `
-      window.nativeAbortController = new AbortController();
-      window.nativeAbortHeaders = false;
-      window.nativeAbortError = null;
-      fixtureNativeFetch('/youtubei/v1/player?delayed=native-abort', {signal: nativeAbortController.signal}).then(response => {
-        window.nativeAbortHeaders = true;
-        response.text().catch(error => { window.nativeAbortError = {name: error.name, message: error.message}; });
-      });
-      void 0;
-    `);
-    await waitFor(session, 'nativeAbortHeaders');
-    await evaluate(session, 'nativeAbortController.abort(); void 0;');
-    await waitFor(session, 'nativeAbortError !== null');
-    await evaluate(session, `
-      window.abortController = new AbortController();
-      window.abortHeaders = false;
-      window.abortBodyError = null;
-      fetch('/youtubei/v1/player?delayed=abort', {signal: abortController.signal}).then(response => {
-        window.abortHeaders = true;
-        response.text().catch(error => { window.abortBodyError = {name: error.name, message: error.message}; });
-      });
-      void 0;
-    `);
-    await waitFor(session, 'abortHeaders');
-    await evaluate(session, 'abortController.abort(); void 0;');
-    await waitFor(session, 'abortBodyError !== null');
-    const aborted = await evaluate(session, 'abortBodyError');
-    // CDP URL rewriting can report an aborted load as a network TypeError in
-    // some Chrome versions. The extension must preserve that native error too.
-    assert.deepEqual(aborted, await evaluate(session, 'nativeAbortError'));
-    assert.equal(await evaluate(session, 'fixtureReports.at(-1).filteredResponses'), 7);
-    console.log('PASS: aborting a native in-flight response rejects its body without counting an ad response');
     await evaluate(session, 'setPrefs({enabled: false, allowedHosts: []})', true);
     await waitFor(session, 'fixtureReports.some(report => report.active === false)');
     assert.deepEqual((await evaluate(session, fetchPlayer)).body, playerResponse);
@@ -481,12 +383,11 @@ const server = http.createServer((req, res) => {
     assert.equal(await evaluate(ordinaryPopup, 'document.querySelector("#video-counter").hidden'), true);
     assert.equal(await evaluate(ordinaryPopup, 'getComputedStyle(document.querySelector("#video-counter")).display'), 'none');
     console.log('PASS: non-YouTube pages show the request counter without an irrelevant video-response card');
-    console.log('19 browser fixture checks passed. Actual unpacked installation/DNR requires --extension; live YouTube remains unverified.');
+    console.log('16 browser fixture checks passed. Actual unpacked installation/DNR requires --extension; live YouTube remains unverified.');
   } finally {
     clearTimeout(deadline);
     browser.kill();
     await once(browser, 'exit');
-    for (const response of delayedResponses.values()) response.destroy();
     server.close();
     fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }

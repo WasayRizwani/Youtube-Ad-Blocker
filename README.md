@@ -14,7 +14,7 @@ A dependency-free Chrome extension (Manifest V3, Chrome 111+) for reducing ads w
 4. Pin **QuietBrowse** in Chrome's extensions menu, then reload existing website tabs.
 
 To upgrade, replace the files in the folder you previously loaded, click **Reload**
-on the extension card, and confirm **0.4.2** appears on the card and in the popup.
+on the extension card, and confirm **0.4.3** appears on the card and in the popup.
 Allow the extension access to YouTube in Chrome's extension settings, then reload
 YouTube. If you choose a different folder, remove the old copy first so two copies
 do not run together.
@@ -42,9 +42,9 @@ Version 0.4.1 reduces the extension's work during YouTube loading and playback:
 
 In the local Chromium fixture, 100 unrelated page updates plus idle time went from 103 player lookups to zero. A simulated minute of normal playback went from 240 polling callbacks to zero. These measure reduced extension work, not a verified improvement to live YouTube loading time.
 
-Version 0.4.2 returns supported YouTube fetch responses as soon as headers arrive. It filters the body once when consumed, instead of eagerly cloning and buffering it. Unread responses do not trigger parsing. Clones share filtering and count once; cancellation and original response errors are preserved. Fetch-response counts now increase on body consumption. Unchanged bodies retain their original bytes. Potentially transformed responses omit length and encoding headers because their final length is not yet known.
+Version 0.4.3 restores the response-handling implementation from 0.4.1 after a user reported YouTube's ad-blocker warning following the 0.4.2 update. It retains the reduced polling and parsing work from 0.4.1. This is a compatibility rollback, not a verified fix for YouTube detection: the warning alone does not establish which change or rule triggered it. The response-stream changes introduced in 0.4.2 are no longer included.
 
-A delayed-response Chromium fixture verifies that headers arrive before the server releases the body. Full JSON still needs to download before filtering; this does not establish a live video-startup speed improvement.
+If YouTube prevents playback, enable **Allow ads on this site** and reload YouTube to pause QuietBrowse there. This leaves filtering on other websites enabled. Other installed blockers can also trigger YouTube's warning.
 
 ## Behavior and limitations
 
@@ -88,7 +88,7 @@ In this cloud environment, unpacked installation is blocked by `ExtensionInstall
 
 For live validation in a Chrome profile that permits developer extensions:
 
-1. Load version 0.4.2, grant YouTube site access, and reload the tab. Check the popup's script status and separate counters, plus the extension card and service worker console for errors. A loaded script with zero removals does not establish ad blocking.
+1. Load version 0.4.3, grant YouTube site access, and reload the tab. Check the popup's script status and separate counters, plus the extension card and service worker console for errors. A loaded script with zero removals does not establish ad blocking.
 2. On a page making a request to an included advertising domain, verify DevTools Network reports `ERR_BLOCKED_BY_CLIENT`, while the main content and normal controls work.
 3. Allow that site and reload; verify the same request is allowed and hidden containers return. Remove the exception to restore filtering. Repeat with the global switch off and on.
 4. Test YouTube playback, navigation between videos, captions, seeking, volume, playback speed, and visible Skip buttons. Verify regular content starts normally and a previously muted video stays muted.

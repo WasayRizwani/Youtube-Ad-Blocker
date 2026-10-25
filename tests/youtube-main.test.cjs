@@ -141,7 +141,7 @@ function harness(host = 'www.youtube.com', before) {
   }
   const context = {
     document: {}, location: { hostname: host, href: `https://${host}/watch?v=example`, origin: `https://${host}` },
-    URL, Headers, Response, Request, ReadableStream, TextDecoder, TextEncoder, queueMicrotask, XMLHttpRequest,
+    URL, Headers, Response, Request, queueMicrotask, XMLHttpRequest,
     fetch: function fetch(...args) { calls.push({ receiver: this, args }); return Promise.resolve(factory(...args)); },
     addEventListener(name, fn) { listeners.set(name, fn); },
     postMessage(value) { messages.push(value); },
@@ -257,24 +257,24 @@ test('fetch player response, text, clone metadata, headers, and body consumption
   await assert.rejects(() => result.text(), TypeError);
 });
 
-test('fetch preserves non-player endpoints, malformed response bytes, redirects, and rejections', async () => {
+test('fetch preserves non-player endpoints, malformed responses, redirects, and rejections', async () => {
   const page = harness();
   let original = page.response(player(), 'https://www.youtube.com/ordinary');
   page.factory(() => original);
   assert.equal(await page.context.fetch('https://www.youtube.com/ordinary'), original);
   original = page.response('not JSON');
-  assert.equal(await (await page.context.fetch('https://www.youtube.com/youtubei/v1/player')).text(), 'not JSON');
+  assert.equal(await page.context.fetch('https://www.youtube.com/youtubei/v1/player'), original);
   original = page.response(player(), 'https://accounts.example/login');
   assert.equal(await page.context.fetch('https://www.youtube.com/youtubei/v1/player'), original);
   original = page.response({ streamingData: { formats: ['ordinary'] } });
-  assert.deepEqual(await (await page.context.fetch('https://www.youtube.com/youtubei/v1/player')).json(), { streamingData: { formats: ['ordinary'] } });
+  assert.equal(await page.context.fetch('https://www.youtube.com/youtubei/v1/player'), original);
   const failure = new Error('network failed'); page.factory(() => { throw failure; });
   assert.throws(() => page.context.fetch('https://www.youtube.com/youtubei/v1/player'), error => error === failure);
   page.factory(() => Promise.reject(failure));
   await assert.rejects(page.context.fetch('https://www.youtube.com/youtubei/v1/player'), error => error === failure);
 });
 
-test('fetch headers resolve independently of a later native body error', async () => {
+test('fetch body failure preserves the native response and body error', async () => {
   const page = harness();
   let controller;
   const stream = new ReadableStream({ start(value) { controller = value; } });
@@ -283,10 +283,10 @@ test('fetch headers resolve independently of a later native body error', async (
   page.factory(() => original);
   const request = page.context.fetch('https://www.youtube.com/youtubei/v1/player');
   await new Promise(resolve => setImmediate(resolve));
+  controller.error(new DOMException('aborted', 'AbortError'));
   const result = await request;
-  const failure = new DOMException('aborted', 'AbortError');
-  controller.error(failure);
-  await assert.rejects(result.text(), error => error === failure);
+  assert.equal(result, original);
+  await assert.rejects(result.text(), { name: 'AbortError' });
 });
 
 test('get_watch and PBJ watch payloads are cleaned, while HTML stays unchanged', async () => {
@@ -299,7 +299,7 @@ test('get_watch and PBJ watch payloads are cleaned, while HTML stays unchanged',
   }
   const html = page.response('<!doctype html><title>Watch</title>', 'https://www.youtube.com/watch?v=example');
   page.factory(() => html);
-  assert.equal(await (await page.context.fetch('https://www.youtube.com/watch?v=example')).text(), '<!doctype html><title>Watch</title>');
+  assert.equal(await page.context.fetch('https://www.youtube.com/watch?v=example'), html);
 });
 
 test('explicit HTML and binary fetch responses return without cloning or waiting for the body', async () => {
@@ -342,351 +342,6 @@ test('missing, plain-text, and unfamiliar fetch types still filter supported JSO
     const parsed = JSON.parse((await result.text()).slice(5));
     assert.equal(parsed.adSlots, undefined, String(type));
     assert.equal(parsed.videoDetails.videoId, 'ordinary-video');
-  }
-});
-
-function controlledPlayerResponse(page, { type = 'application/json', status = 200 } = {}) {
-  let controller;
-  const events = { readers: 0, clones: 0, cancellations: [] };
-  const body = new ReadableStream({
-    type: 'bytes',
-    start(value) { controller = value; },
-    cancel(reason) { events.cancellations.push(reason); }
-  }, { highWaterMark: 0 });
-  const nativeReader = body.getReader;
-  body.getReader = function (...args) {
-    events.readers++;
-    return Reflect.apply(nativeReader, this, args);
-  };
-  const original = new Response(body, {
-    status, statusText: 'Player ready',
-    headers: { 'content-type': type, 'content-length': '9999', 'content-encoding': 'gzip', 'x-preserved': 'yes' }
-  });
-  Object.defineProperties(original, {
-    url: { value: 'https://www.youtube.com/youtubei/v1/player', configurable: true },
-    redirected: { value: true }, type: { value: 'basic' }
-  });
-  original.clone = () => { events.clones++; throw new Error('The original body must not be teed'); };
-  page.factory(() => original);
-  return { original, controller, events };
-}
-
-const nextTurn = () => new Promise(resolve => setImmediate(resolve));
-
-test('player fetch returns at headers and waits for consumption before reading or counting', { timeout: 3000 }, async () => {
-  const page = harness();
-  const { original, controller, events } = controlledPlayerResponse(page, { status: 201 });
-  let returned = false;
-  const pending = page.context.fetch(original.url).then(value => { returned = true; return value; });
-  await nextTurn();
-  assert.equal(returned, true, 'fetch must settle while its body is still incomplete');
-  const result = await pending;
-  assert.equal(events.readers, 0);
-  assert.equal(events.clones, 0);
-  assert.equal(original.bodyUsed, false);
-  assert.equal(original.body.locked, false);
-  assert.equal(result.bodyUsed, false);
-  assert.equal(result.status, 201);
-  assert.equal(result.statusText, 'Player ready');
-  assert.equal(result.type, 'basic');
-  assert.equal(result.redirected, true);
-  assert.equal(result.headers.get('x-preserved'), 'yes');
-  assert.equal(result.headers.get('content-length'), null);
-  assert.equal(result.headers.get('content-encoding'), null);
-  assert.equal((await latestReport(page)).filteredResponses, 0);
-  // Response metadata belongs to this request, even if another page hook later
-  // changes properties on the original response object.
-  Object.defineProperty(original, 'url', { value: 'https://other.example/changed' });
-  const clone = result.clone();
-  assert.equal(clone.url, 'https://www.youtube.com/youtubei/v1/player');
-  await nextTurn();
-  assert.equal(events.readers, 0, 'cloning alone must not consume the source');
-  let finished = false;
-  const parsed = result.json().then(value => { finished = true; return value; });
-  await nextTurn();
-  assert.equal(events.readers, 1);
-  assert.equal(result.bodyUsed, true);
-  const bytes = new TextEncoder().encode(JSON.stringify(player()));
-  controller.enqueue(bytes.slice(0, 20));
-  await nextTurn();
-  assert.equal(finished, false, 'partial JSON must not leak through to the player');
-  assert.equal((await latestReport(page)).filteredResponses, 0);
-  controller.enqueue(bytes.slice(20));
-  controller.close();
-  assert.equal((await parsed).adSlots, undefined);
-  assert.equal(JSON.parse(await clone.text()).playerAds, undefined);
-  assert.equal((await latestReport(page)).filteredResponses, 1);
-  assert.equal(events.readers, 1);
-  assert.equal(events.clones, 0);
-});
-
-async function bytesFromReader(reader, byob = false) {
-  const chunks = [];
-  while (true) {
-    const result = await reader.read(...(byob ? [new Uint8Array(31)] : []));
-    if (result.value?.length) chunks.push(Buffer.from(result.value));
-    if (result.done) break;
-  }
-  return Buffer.concat(chunks).toString('utf8');
-}
-
-test('every native response body API and clone consumes the same sanitized byte stream once', { timeout: 5000 }, async () => {
-  const consumers = {
-    json: async response => response.json(),
-    text: async response => JSON.parse(await response.text()),
-    arrayBuffer: async response => JSON.parse(new TextDecoder().decode(await response.arrayBuffer())),
-    blob: async response => {
-      const blob = await response.blob();
-      assert.equal(blob.type, 'application/json');
-      return JSON.parse(await blob.text());
-    },
-    nativePrototype: async response => JSON.parse(await Response.prototype.text.call(response)),
-    defaultReader: async response => JSON.parse(await bytesFromReader(response.body.getReader())),
-    byobReader: async response => JSON.parse(await bytesFromReader(response.body.getReader({ mode: 'byob' }), true))
-  };
-  if (Response.prototype.bytes) consumers.bytes = async response => JSON.parse(new TextDecoder().decode(await response.bytes()));
-  for (const [name, consume] of Object.entries(consumers)) {
-    const page = harness();
-    const { original, controller, events } = controlledPlayerResponse(page);
-    const response = await page.context.fetch(original.url);
-    const clone = response.clone();
-    const reading = consume(response);
-    const bytes = new TextEncoder().encode(JSON.stringify(player()));
-    controller.enqueue(bytes.slice(0, 3));
-    controller.enqueue(bytes.slice(3));
-    controller.close();
-    const value = await reading;
-    assert.equal(value.adSlots, undefined, name);
-    assert.equal(value.playerAds, undefined, name);
-    assert.deepEqual(value.streamingData, player().streamingData, name);
-    assert.equal((await clone.json()).adPlacements, undefined, name);
-    assert.equal((await latestReport(page)).filteredResponses, 1, name);
-    assert.equal(events.readers, 1, name);
-    assert.equal(events.clones, 0, name);
-    assert.equal(response.bodyUsed, true, name);
-    assert.throws(() => response.clone(), TypeError, name);
-    await assert.rejects(response.text(), TypeError, name);
-  }
-  const page = harness();
-  page.factory(() => page.response('name=ordinary&value=keep', undefined, { headers: { 'content-type': 'application/x-www-form-urlencoded' } }));
-  const fields = await (await page.context.fetch('https://www.youtube.com/youtubei/v1/player')).formData();
-  assert.equal(fields.get('name'), 'ordinary');
-  assert.equal(fields.get('value'), 'keep');
-  assert.equal((await latestReport(page)).filteredResponses, 0);
-});
-
-test('unchanged and malformed bodies preserve original bytes including BOM and invalid UTF-8', { timeout: 3000 }, async () => {
-  const inputs = [
-    Buffer.from('\ufeff{"videoDetails":{"title":"Snow 雪 and 🌱"}}'),
-    Buffer.from([0xef, 0xbb, 0xbf, 0xff, 0x61, 0xc3, 0x28]),
-    Buffer.concat([Buffer.from('\ufeff{"adSlots":['), Buffer.from([0xff]), Buffer.from('malformed')]),
-    Buffer.alloc(0)
-  ];
-  for (const input of inputs) {
-    const page = harness();
-    const { original, controller } = controlledPlayerResponse(page);
-    const response = await page.context.fetch(original.url);
-    const clone = response.clone();
-    const data = response.arrayBuffer();
-    for (let offset = 0; offset < input.length; offset += 2) controller.enqueue(Uint8Array.from(input.subarray(offset, offset + 2)));
-    controller.close();
-    assert.deepEqual(Buffer.from(await data), input);
-    assert.equal(await clone.text(), await new Response(input).text());
-    assert.equal((await latestReport(page)).filteredResponses, 0);
-  }
-});
-
-test('chunked UTF-8, BOM, XSSI and escaped ad keys preserve normal player data', { timeout: 3000 }, async () => {
-  for (const prefix of ['\ufeff', '\ufeff)]}\'\n', ")]}'\n"]) {
-    const page = harness();
-    const payload = player(); payload.videoDetails.title = '雪 and 🌱';
-    const text = prefix + JSON.stringify(payload).replace('"adSlots"', '"adSl\\u006fts"');
-    const { original, controller } = controlledPlayerResponse(page);
-    const response = await page.context.fetch(original.url);
-    const pending = response.text();
-    const input = new TextEncoder().encode(text);
-    for (let offset = 0; offset < input.length; offset += 2) controller.enqueue(input.slice(offset, offset + 2));
-    controller.close();
-    const output = await pending;
-    const parsed = JSON.parse(output.replace(/^\)\]\}'\n/, ''));
-    assert.equal(parsed.adSlots, undefined);
-    assert.equal(parsed.playerAds, undefined);
-    assert.equal(parsed.videoDetails.title, payload.videoDetails.title);
-    assert.deepEqual(parsed.streamingData, payload.streamingData);
-    assert.equal((await latestReport(page)).filteredResponses, 1);
-  }
-});
-
-test('response cancellation before and during reading reaches the original source without counting', { timeout: 3000 }, async () => {
-  for (const reading of [false, true]) {
-    const page = harness();
-    const { original, controller, events } = controlledPlayerResponse(page);
-    const response = await page.context.fetch(original.url);
-    const reason = { why: reading ? 'cancel mid-body' : 'unused request' };
-    if (reading) {
-      const reader = response.body.getReader();
-      const pending = reader.read();
-      controller.enqueue(new TextEncoder().encode('{"adSlots":'));
-      await nextTurn();
-      assert.equal(events.readers, 1);
-      await reader.cancel(reason);
-      assert.equal((await pending).done, true);
-    } else {
-      assert.equal(events.readers, 0);
-      await response.body.cancel(reason);
-    }
-    assert.deepEqual(events.cancellations, [reason]);
-    assert.equal((await latestReport(page)).filteredResponses, 0);
-    assert.equal(events.clones, 0);
-    assert.equal(response.bodyUsed, true);
-    await nextTurn();
-    assert.equal(original.body.locked, false, 'cancellation releases the source reader');
-  }
-});
-
-test('clone cancellation preserves the other branch and cancels the source only when both stop', { timeout: 3000 }, async () => {
-  const page = harness();
-  const { original, controller, events } = controlledPlayerResponse(page);
-  const response = await page.context.fetch(original.url);
-  const clone = response.clone();
-  const cancelling = response.body.cancel('unused first branch');
-  const reading = clone.json();
-  controller.enqueue(new TextEncoder().encode(JSON.stringify(player())));
-  controller.close();
-  assert.equal((await reading).adSlots, undefined);
-  await cancelling;
-  assert.deepEqual(events.cancellations, []);
-  assert.equal((await latestReport(page)).filteredResponses, 1);
-
-  const stoppedPage = harness();
-  const stopped = controlledPlayerResponse(stoppedPage);
-  const unused = await stoppedPage.context.fetch(stopped.original.url);
-  const unusedClone = unused.clone();
-  await Promise.all([unused.body.cancel('first branch'), unusedClone.body.cancel('second branch')]);
-  assert.deepEqual(stopped.events.cancellations, [['first branch', 'second branch']]);
-  assert.equal(stopped.events.readers, 0);
-  assert.equal((await latestReport(stoppedPage)).filteredResponses, 0);
-});
-
-test('empty response bodies settle pending BYOB reads at EOF without counting', { timeout: 3000 }, async () => {
-  const page = harness();
-  const { original, controller } = controlledPlayerResponse(page);
-  const response = await page.context.fetch(original.url);
-  const reader = response.body.getReader({ mode: 'byob' });
-  const reading = reader.read(new Uint8Array(8));
-  controller.close();
-  const result = await reading;
-  assert.equal(result.done, true);
-  assert.equal(result.value.byteLength, 0);
-  assert.equal((await latestReport(page)).filteredResponses, 0);
-});
-
-test('abort and source errors during reads preserve the exact native error and never count', { timeout: 3000 }, async () => {
-  for (const failure of [new DOMException('native abort', 'AbortError'), new TypeError('native body failure')]) {
-    const page = harness();
-    const { original, controller } = controlledPlayerResponse(page);
-    const response = await page.context.fetch(original.url);
-    const data = response.text();
-    const rejection = assert.rejects(data, error => error === failure);
-    controller.enqueue(new TextEncoder().encode('{"adSlots":'));
-    await nextTurn();
-    controller.error(failure);
-    await rejection;
-    assert.equal((await latestReport(page)).filteredResponses, 0);
-    assert.equal(original.body.locked, false, 'a failed source read releases its lock');
-  }
-});
-
-test('non-byte response chunks retain native TypeError rejection instead of becoming empty or corrupted data', { timeout: 3000 }, async () => {
-  for (const chunk of ['{"adSlots":[{}]}', new Uint16Array([123, 125])]) {
-    const nativeResponse = () => new Response(new ReadableStream({
-      start(controller) { controller.enqueue(chunk); controller.close(); }
-    }));
-    await assert.rejects(nativeResponse().text(), { name: 'TypeError' });
-    const page = harness();
-    const original = nativeResponse();
-    Object.defineProperty(original, 'url', { value: 'https://www.youtube.com/youtubei/v1/player' });
-    page.factory(() => original);
-    const response = await page.context.fetch(original.url);
-    await assert.rejects(response.text(), { name: 'TypeError' });
-    assert.equal(original.body.locked, false);
-    assert.equal((await latestReport(page)).filteredResponses, 0);
-  }
-});
-
-test('disabling after headers or during a body read returns unfiltered original bytes', { timeout: 3000 }, async () => {
-  for (const duringRead of [false, true]) {
-    const page = harness();
-    const { original, controller } = controlledPlayerResponse(page);
-    const response = await page.context.fetch(original.url);
-    const bytes = new TextEncoder().encode('\ufeff' + JSON.stringify(player()));
-    let reading;
-    if (duringRead) {
-      reading = response.arrayBuffer();
-      controller.enqueue(bytes.slice(0, 25));
-      await nextTurn();
-    }
-    page.control(false);
-    if (!duringRead) reading = response.arrayBuffer();
-    controller.enqueue(duringRead ? bytes.slice(25) : bytes.slice());
-    controller.close();
-    assert.deepEqual(Buffer.from(await reading), Buffer.from(bytes));
-    assert.equal((await latestReport(page)).filteredResponses, 0);
-  }
-});
-
-test('body locking and setup failures retain native response behavior', { timeout: 3000 }, async () => {
-  const page = harness();
-  const { original, controller } = controlledPlayerResponse(page);
-  const response = await page.context.fetch(original.url);
-  const reader = response.body.getReader({ mode: 'byob' });
-  assert.equal(response.body.locked, true);
-  assert.equal(response.bodyUsed, false);
-  assert.throws(() => response.clone(), TypeError);
-  await assert.rejects(response.text(), TypeError);
-  reader.releaseLock();
-  assert.equal(response.body.locked, false);
-  const pending = response.json();
-  controller.enqueue(new TextEncoder().encode(JSON.stringify(player())));
-  controller.close();
-  assert.equal((await pending).adSlots, undefined);
-
-  // A page can replace a constructor or present a locked response through an
-  // earlier fetch hook. Setup must fail open before consuming that body.
-  const missingStream = harness('www.youtube.com', context => { context.ReadableStream = undefined; });
-  const intact = missingStream.response(player());
-  missingStream.factory(() => intact);
-  const untouched = await missingStream.context.fetch(intact.url);
-  assert.equal(untouched, intact);
-  assert.equal(intact.bodyUsed, false);
-  assert.ok((await untouched.json()).adSlots);
-  assert.equal((await latestReport(missingStream)).filteredResponses, 0);
-
-  const locked = page.response(player());
-  const originalReader = locked.body.getReader();
-  page.factory(() => locked);
-  assert.equal(await page.context.fetch(locked.url), locked);
-  assert.equal(locked.bodyUsed, false);
-  originalReader.releaseLock();
-  const used = page.response(player());
-  await used.text();
-  page.factory(() => used);
-  assert.equal(await page.context.fetch(used.url), used);
-  assert.equal(used.bodyUsed, true);
-});
-
-test('filter decoding or encoding failure returns the exact original body bytes', { timeout: 3000 }, async () => {
-  for (const constructor of ['TextDecoder', 'TextEncoder']) {
-    const page = harness('www.youtube.com', context => {
-      context[constructor] = class { constructor() { throw new Error('page-owned codec failed'); } };
-    });
-    const { original, controller } = controlledPlayerResponse(page);
-    const response = await page.context.fetch(original.url);
-    const bytes = new TextEncoder().encode('\ufeff' + JSON.stringify(player()));
-    const pending = response.arrayBuffer();
-    controller.enqueue(bytes.slice()); controller.close();
-    assert.deepEqual(Buffer.from(await pending), Buffer.from(bytes), constructor);
-    assert.equal((await latestReport(page)).filteredResponses, 0, constructor);
   }
 });
 
@@ -761,7 +416,7 @@ test('response counter counts successful responses rather than individual ad fie
   for (let i = 0; i < 10; i++) page.run('ytInitialPlayerResponse.videoDetails.videoId');
   assert.equal((await latestReport(page)).filteredResponses, 1);
 
-  await (await page.context.fetch('https://www.youtube.com/youtubei/v1/player')).text();
+  await page.context.fetch('https://www.youtube.com/youtubei/v1/player');
   assert.equal((await latestReport(page)).filteredResponses, 2);
 
   const xhr = new page.context.XMLHttpRequest();
@@ -840,7 +495,7 @@ test('empty, malformed, unrelated, and disabled responses never increase the res
   const page = harness();
   for (const value of [{}, { adPlacements: [], playerAds: null, adSlots: {} }, 'not JSON']) {
     page.factory(() => page.response(value));
-    await (await page.context.fetch('https://www.youtube.com/youtubei/v1/player')).text();
+    await page.context.fetch('https://www.youtube.com/youtubei/v1/player');
   }
   page.factory(() => page.response(player(), 'https://www.youtube.com/profile'));
   await page.context.fetch('https://www.youtube.com/profile');
