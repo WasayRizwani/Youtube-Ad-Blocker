@@ -271,17 +271,117 @@
     } catch { return false; }
   }
 
-  function preserveResponseMetadata(response, original) {
+  function preserveResponseMetadata(response, metadata, state) {
     for (const key of ['url', 'redirected', 'type']) {
-      Object.defineProperty(response, key, { value: original[key], configurable: true });
+      Object.defineProperty(response, key, { value: metadata[key], configurable: true });
     }
     const clone = response.clone;
     Object.defineProperty(response, 'clone', {
       configurable: true, value: function cloneResponse() {
-        return preserveResponseMetadata(Reflect.apply(clone, this, []), original);
+        const copy = Reflect.apply(clone, this, []);
+        return this === response ? preserveResponseMetadata(copy, metadata, state) : copy;
       }
     });
+    // Chromium can replace a custom stream's error with "Failed to fetch" in
+    // body-consumption methods. Preserve the original network/abort reason while
+    // leaving native parser errors, locked bodies and repeated reads unchanged.
+    for (const method of ['arrayBuffer', 'blob', 'bytes', 'formData', 'json', 'text']) {
+      const native = response[method];
+      if (typeof native !== 'function') continue;
+      Object.defineProperty(response, method, { configurable: true,
+        value: new Proxy(native, {
+          apply(target, receiver, args) {
+            const readable = receiver === response && !response.bodyUsed && !response.body.locked;
+            const promise = Reflect.apply(target, receiver, args);
+            if (!readable || !response.bodyUsed) return promise;
+            return promise.catch(error => {
+              if (state.failed) throw state.error;
+              throw error;
+            });
+          }
+        })
+      });
+    }
     return response;
+  }
+
+  function filteredBody(body, state) {
+    let reader;
+    let started = false;
+    let cancelled = false;
+    return new ReadableStream({
+      type: 'bytes',
+      async pull(controller) {
+        if (started) return;
+        started = true;
+        const chunks = [];
+        let size = 0;
+        try {
+          reader = body.getReader();
+          while (true) {
+            const { value, done } = await reader.read();
+            if (cancelled) return;
+            if (done) break;
+            if (!ArrayBuffer.isView(value) || Object.prototype.toString.call(value) !== '[object Uint8Array]') {
+              throw new TypeError('Response body chunks must be Uint8Array');
+            }
+            if (value.byteLength) { chunks.push(value); size += value.byteLength; }
+          }
+          // JSON filtering needs the complete document. Read the original once,
+          // without a tee retaining an unused second copy of its network body.
+          // Copy into our own buffer: byte-stream enqueue transfers ownership,
+          // and source chunks can share buffers or belong to another script.
+          let bytes = new Uint8Array(size);
+          let offset = 0;
+          for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+          chunks.length = 0;
+          let clean;
+          if (enabled) {
+            try {
+              const result = pruneText(new TextDecoder().decode(bytes));
+              if (result.removed) {
+                bytes = new TextEncoder().encode(result.value);
+                clean = result;
+              }
+            } catch { /* Filtering failures retain the original bytes. */ }
+          }
+          if (cancelled) return;
+          if (bytes.byteLength) controller.enqueue(bytes);
+          controller.close();
+          // A zero-byte body must also settle a pending BYOB reader at EOF.
+          controller.byobRequest?.respond(0);
+          if (clean) record(clean, 'fetch');
+        } catch (error) {
+          if (!cancelled) {
+            state.failed = true;
+            state.error = error;
+            controller.error(error);
+          }
+        } finally {
+          chunks.length = 0;
+          reader?.releaseLock();
+          reader = null;
+        }
+      },
+      cancel(reason) {
+        cancelled = true;
+        return reader ? reader.cancel(reason) : body.cancel(reason);
+      }
+    }, { highWaterMark: 0 });
+  }
+
+  function wrapPlayerResponse(response) {
+    const headers = new Headers(response.headers);
+    // The filtered length is not known until consumption. Preserve every other
+    // header and snapshot metadata instead of retaining the original Response.
+    headers.delete('content-length');
+    headers.delete('content-encoding');
+    const metadata = { url: response.url, redirected: response.redirected, type: response.type };
+    const state = { failed: false, error: undefined };
+    const replacement = new Response(filteredBody(response.body, state), {
+      status: response.status, statusText: response.statusText, headers
+    });
+    return preserveResponseMetadata(replacement, metadata, state);
   }
   try { if (typeof window.fetch === 'function') {
     const nativeFetch = window.fetch;
@@ -291,29 +391,20 @@
         try { requestURL = args[0]?.url ?? String(args[0]); } catch { /* Native fetch reports invalid input. */ }
         const promise = Reflect.apply(target, receiver, args);
         if (!isPlayerURL(requestURL)) return promise;
-        return promise.then(async response => {
+        return promise.then(response => {
           if (!enabled || !isPlayerURL(response.url || requestURL)) return response;
           try {
             const type = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
             // /watch and /playlist also serve documents. Waiting for an HTML or
             // binary body here delays fetch for data we cannot filter anyway.
             // Missing/ambiguous types (including text/plain) still get checked.
-            if (!response.body || type === 'text/html' || type === 'application/xhtml+xml' ||
+            if (!response.body || response.bodyUsed || response.body.locked ||
+                type === 'text/html' || type === 'application/xhtml+xml' ||
                 type === 'application/pdf' ||
                 /^(?:image|audio|video|font)\//.test(type || '')) return response;
-            const text = await response.clone().text();
-            // A disable request can arrive while the body is being read.
-            if (!enabled) return response;
-            const clean = pruneText(text);
-            if (!clean.removed) return response;
-            const headers = new Headers(response.headers);
-            headers.delete('content-length');
-            headers.delete('content-encoding');
-            const replacement = new Response(clean.value, { status: response.status,
-              statusText: response.statusText, headers });
-            preserveResponseMetadata(replacement, response);
-            record(clean, 'fetch');
-            return replacement;
+            // Preserve fetch's header-ready timing. Body APIs and clones share
+            // one lazy filter, including direct stream and BYOB consumption.
+            return wrapPlayerResponse(response);
           } catch { return response; }
         });
       }

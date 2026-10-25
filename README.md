@@ -8,13 +8,13 @@ A dependency-free Chrome extension (Manifest V3, Chrome 111+) for reducing ads w
 
 ## Install in Chrome
 
-1. [Download the current GitHub ZIP](https://github.com/WasayRizwani/Ad-Blocker/archive/refs/heads/main.zip) and extract it.
+1. [Download the current GitHub ZIP](https://github.com/WasayRizwani/Youtube-Ad-Blocker/archive/refs/heads/main.zip) and extract it.
 2. Open `chrome://extensions` and turn on **Developer mode**.
 3. Click **Load unpacked** and select the folder containing `manifest.json`.
 4. Pin **QuietBrowse** in Chrome's extensions menu, then reload existing website tabs.
 
 To upgrade, replace the files in the folder you previously loaded, click **Reload**
-on the extension card, and confirm **0.4.1** appears on the card and in the popup.
+on the extension card, and confirm **0.4.2** appears on the card and in the popup.
 Allow the extension access to YouTube in Chrome's extension settings, then reload
 YouTube. If you choose a different folder, remove the old copy first so two copies
 do not run together.
@@ -41,6 +41,10 @@ Version 0.4.1 reduces the extension's work during YouTube loading and playback:
 - Explicit HTML and media responses pass through without waiting for their bodies. JSON responses and ambiguous content types retain response filtering.
 
 In the local Chromium fixture, 100 unrelated page updates plus idle time went from 103 player lookups to zero. A simulated minute of normal playback went from 240 polling callbacks to zero. These measure reduced extension work, not a verified improvement to live YouTube loading time.
+
+Version 0.4.2 returns supported YouTube fetch responses as soon as headers arrive. It filters the body once when consumed, instead of eagerly cloning and buffering it. Unread responses do not trigger parsing. Clones share filtering and count once; cancellation and original response errors are preserved. Fetch-response counts now increase on body consumption. Unchanged bodies retain their original bytes. Potentially transformed responses omit length and encoding headers because their final length is not yet known.
+
+A delayed-response Chromium fixture verifies that headers arrive before the server releases the body. Full JSON still needs to download before filtering; this does not establish a live video-startup speed improvement.
 
 ## Behavior and limitations
 
@@ -78,13 +82,13 @@ The unit suite checks response pruning and native API behavior, response-counter
 
 `test:extension` separately loads the actual unpacked extension and checks real request blocking, site exceptions, the global switch, early MAIN-world registration, and content diagnostics against local fixtures. It intentionally fails when browser administration prevents extension loading. It still does not establish live YouTube compatibility.
 
-[GitHub Actions](https://github.com/WasayRizwani/Ad-Blocker/actions/workflows/test.yml) is configured to run all three commands in a fresh Chrome runner on pushes and pull requests. Its result must be checked separately; adding the workflow does not establish that it passed or that live YouTube ads were tested.
+[GitHub Actions](https://github.com/WasayRizwani/Youtube-Ad-Blocker/actions/workflows/test.yml) is configured to run all three commands in a fresh Chrome runner on pushes and pull requests. Its result must be checked separately; adding the workflow does not establish that it passed or that live YouTube ads were tested.
 
 In this cloud environment, unpacked installation is blocked by `ExtensionInstallBlocklist: ["*"]` and returns “Loading of unpacked extensions is disabled by the administrator.” No policy was changed. Direct YouTube access also returned HTTP 403 from the egress proxy. The reported [YouTube video](https://www.youtube.com/watch?v=tMwTz2a72cw) remains unverified live. No shared-desktop or additional-computer launcher is available in this chat.
 
 For live validation in a Chrome profile that permits developer extensions:
 
-1. Load version 0.4.1, grant YouTube site access, and reload the tab. Check the popup's script status and separate counters, plus the extension card and service worker console for errors. A loaded script with zero removals does not establish ad blocking.
+1. Load version 0.4.2, grant YouTube site access, and reload the tab. Check the popup's script status and separate counters, plus the extension card and service worker console for errors. A loaded script with zero removals does not establish ad blocking.
 2. On a page making a request to an included advertising domain, verify DevTools Network reports `ERR_BLOCKED_BY_CLIENT`, while the main content and normal controls work.
 3. Allow that site and reload; verify the same request is allowed and hidden containers return. Remove the exception to restore filtering. Repeat with the global switch off and on.
 4. Test YouTube playback, navigation between videos, captions, seeking, volume, playback speed, and visible Skip buttons. Verify regular content starts normally and a previously muted video stays muted.
