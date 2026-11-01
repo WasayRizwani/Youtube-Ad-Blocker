@@ -2,21 +2,50 @@
   "manifest_version": 3,
   "minimum_chrome_version": "111",
   "name": "QuietBrowse",
-  "version": "0.4.3",
-  "description": "Conservative ad blocking with site exceptions and best-effort YouTube ad handling.",
-  "permissions": ["declarativeNetRequest", "storage", "activeTab", "scripting"],
-  "host_permissions": ["http://*/*", "https://*/*"],
-  "background": { "service_worker": "background.js" },
-  "action": { "default_popup": "popup.html", "default_title": "QuietBrowse" },
+  "version": "0.5.0",
+  "description": "YouTube player-ad filtering with site exceptions. No network-request or banner blocking.",
+  "permissions": [
+    "declarativeNetRequest",
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "*://*.youtube.com/*",
+    "*://*.youtube-nocookie.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "QuietBrowse"
+  },
   "declarative_net_request": {
     "rule_resources": [
-      { "id": "ads", "enabled": true, "path": "rules/ads.json" },
-      { "id": "easylist", "enabled": true, "path": "rules/easylist.json" }
+      {
+        "id": "ads",
+        "enabled": false,
+        "path": "rules/ads.json"
+      },
+      {
+        "id": "easylist",
+        "enabled": false,
+        "path": "rules/easylist.json"
+      }
     ]
   },
-  "content_scripts": [{
-    "matches": ["http://*/*", "https://*/*"],
-    "js": ["core.js", "content.js"],
-    "run_at": "document_start"
-  }]
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.youtube.com/*",
+        "*://*.youtube-nocookie.com/*"
+      ],
+      "js": [
+        "core.js",
+        "content.js"
+      ],
+      "run_at": "document_start"
+    }
+  ]
 }

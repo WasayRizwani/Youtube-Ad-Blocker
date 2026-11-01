@@ -47,6 +47,7 @@ function background(options = {}) {
   let saved;
   let rules = [];
   let enabled = ['ads'];
+  let disabledRulesets = [];
   let fail = false;
   let scripts = [];
   let failScript = options.failRegistration === true;
@@ -62,7 +63,7 @@ function background(options = {}) {
     declarativeNetRequest: {
       async getDynamicRules() { return rules; },
       async updateDynamicRules(value) { rules = value.addRules; },
-      async updateEnabledRulesets(value) { enabled = value.enableRulesetIds; },
+      async updateEnabledRulesets(value) { enabled = value.enableRulesetIds; disabledRulesets = value.disableRulesetIds; },
       async setExtensionActionOptions(value) { actionCountEnabled = value.displayActionCountAsBadgeText; }
     },
     scripting: {
@@ -82,7 +83,7 @@ function background(options = {}) {
   return {
     send: message => new Promise(resolve => listener(message, { id: 'test-extension', url: 'chrome-extension://test-extension/popup.html' }, resolve)),
     rejected: sender => listener({ type: 'SET_ENABLED', enabled: false }, sender, () => {}),
-    network: () => ({ rules, enabled }),
+    network: () => ({ rules, enabled, disabledRulesets }),
     scripts: () => scripts,
     counterEnabled: () => actionCountEnabled,
     failNextSave() { fail = true; }
@@ -92,18 +93,21 @@ function background(options = {}) {
 test('background persists switches and removes inherited site exceptions', async () => {
   const app = background();
   assert.equal((await app.send({ type: 'GET_STATE' })).settings.enabled, true);
-  assert.equal(app.counterEnabled(), true);
+  assert.equal(app.counterEnabled(), false);
+  assert.deepEqual(Array.from(app.network().disabledRulesets), ['ads', 'easylist']);
   await app.send({ type: 'SET_SITE_ALLOWED', host: 'example.com', allowed: true });
-  assert.equal(app.network().rules.length, 2);
+  assert.equal(app.network().rules.length, 0);
   await app.send({ type: 'SET_SITE_ALLOWED', host: 'www.example.com', allowed: false });
   assert.equal(app.network().rules.length, 0);
   await app.send({ type: 'SET_ENABLED', enabled: false });
   assert.equal(app.network().enabled.length, 0);
   assert.equal(app.counterEnabled(), false);
+  assert.deepEqual(Array.from(app.network().disabledRulesets), ['ads', 'easylist']);
   assert.equal((await app.send({ type: 'GET_STATE' })).settings.enabled, false);
   await app.send({ type: 'SET_ENABLED', enabled: true });
-  assert.deepEqual(Array.from(app.network().enabled), ['ads', 'easylist']);
-  assert.equal(app.counterEnabled(), true);
+  assert.deepEqual(Array.from(app.network().enabled), []);
+  assert.equal(app.counterEnabled(), false);
+  assert.deepEqual(Array.from(app.network().disabledRulesets), ['ads', 'easylist']);
 });
 
 test('YouTube MAIN script runs early, persists, and excludes only allowed websites', () => {
@@ -152,7 +156,7 @@ test('failed persistence restores network configuration and queue remains usable
   app.failNextSave();
   const result = await app.send({ type: 'SET_ENABLED', enabled: false });
   assert.equal(result.error, 'Storage failure');
-  assert.deepEqual(Array.from(app.network().enabled), ['ads', 'easylist']);
+  assert.deepEqual(Array.from(app.network().enabled), []);
   assert.equal((await app.send({ type: 'GET_STATE' })).settings.enabled, true);
 });
 
@@ -193,4 +197,11 @@ sample = '''||ads.example^
 print(json.dumps(convert(sample)))
 `], { cwd: root, encoding: 'utf8' });
   assert.deepEqual(JSON.parse(output), ['ads.example']);
+});
+
+test('video-only mode defaults to no network rules and only YouTube page access', () => {
+ const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json')));
+ assert.ok(manifest.declarative_net_request.rule_resources.every(rule => rule.enabled === false));
+ assert.deepEqual(manifest.host_permissions, ['*://*.youtube.com/*', '*://*.youtube-nocookie.com/*']);
+ assert.deepEqual(manifest.content_scripts[0].matches, manifest.host_permissions);
 });

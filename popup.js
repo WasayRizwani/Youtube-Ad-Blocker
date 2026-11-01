@@ -22,21 +22,14 @@ async function refreshCounts(settings) {
     note.textContent = 'Open a website to see its counts.';
     return;
   }
-  const [badge, page] = await Promise.all([
-    settings.enabled ? chrome.action.getBadgeText({ tabId: tab.id }).catch(() => null) : Promise.resolve(null),
-    youtube ? chrome.tabs.sendMessage(tab.id, { type: 'GET_PAGE_STATUS' }).catch(() => null) : Promise.resolve(null)
-  ]);
+  const page = youtube ? await chrome.tabs.sendMessage(tab.id, { type: 'GET_PAGE_STATUS' }).catch(() => null) : null;
   if (generation !== countGeneration) return;
-  // Chrome returns '?' when the count is not available with this tab grant.
-  // An empty badge is zero only with native counting enabled and no custom
-  // per-tab badge. QuietBrowse never sets custom per-tab badge text.
-  const value = badge === '' ? 0 : typeof badge === 'string' && /^\d+$/.test(badge) ? Number(badge) : null;
-  requestCount.textContent = Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString() : '—';
+  requestCount.textContent = '0';
   const filtered = page?.playerFilter?.filteredResponses;
   videoCount.textContent = Number.isSafeInteger(filtered) && filtered >= 0 ? filtered.toLocaleString() : '—';
-  note.textContent = !settings.enabled ? 'Protection paused. Page totals resume when enabled.' :
-    value === null ? 'Request count unavailable for this tab. Open the popup using the extension’s toolbar button.' :
-      'This page · resets on reload. Several requests or responses can belong to one ad.';
+  note.textContent = !settings.enabled ? 'Protection paused.' : youtube ?
+    'Player responses filtered on this page. Resets on reload. Network requests and banners are allowed.' :
+    'YouTube only. No ads are blocked on this website.';
 }
 async function refreshProtection(settings) {
   const protection = document.querySelector('#protection');
@@ -48,8 +41,8 @@ async function refreshProtection(settings) {
     return;
   }
   if (!/(^|\.)(youtube\.com|youtube-nocookie\.com)$/.test(host)) {
-    protection.textContent = 'Website request filtering is enabled.';
-    details.textContent = 'Reload after updating the extension or changing site settings.';
+    protection.textContent = 'QuietBrowse only filters YouTube player ads.';
+    details.textContent = 'No ads are blocked on this website.';
     return;
   }
   try {

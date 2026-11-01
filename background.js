@@ -22,15 +22,15 @@ async function apply(settings) {
   const existing = await chrome.declarativeNetRequest.getDynamicRules();
   await chrome.declarativeNetRequest.updateDynamicRules({
     removeRuleIds: existing.map(rule => rule.id),
-    addRules: QuietBrowse.exceptionRules(settings)
+    addRules: []
   });
   await chrome.declarativeNetRequest.updateEnabledRulesets({
-    enableRulesetIds: settings.enabled ? RULESETS : [],
-    disableRulesetIds: settings.enabled ? [] : RULESETS
+    enableRulesetIds: [],
+    disableRulesetIds: RULESETS
   });
   await configureYouTube(settings);
   await chrome.declarativeNetRequest.setExtensionActionOptions({
-    displayActionCountAsBadgeText: settings.enabled
+    displayActionCountAsBadgeText: false
   });
   await chrome.action.setBadgeText({ text: settings.enabled ? '' : 'OFF' });
   await chrome.action.setBadgeBackgroundColor({ color: settings.enabled ? '#196958' : '#64748b' });

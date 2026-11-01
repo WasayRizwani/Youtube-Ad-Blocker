@@ -1,17 +1,8 @@
 (() => {
   'use strict';
   const youtube = /(^|\.)(youtube\.com|youtube-nocookie\.com)$/.test(location.hostname);
-  const css = `
-    ins.adsbygoogle, iframe[id^="google_ads_iframe"], div[id^="div-gpt-ad"],
-    ytd-ad-slot-renderer, ytd-display-ad-renderer, ytd-promoted-sparkles-web-renderer,
-    ytd-promoted-video-renderer, ytd-in-feed-ad-layout-renderer, ytd-banner-promo-renderer,
-    ytd-action-companion-ad-renderer, ytd-video-masthead-ad-v3-renderer,
-    ytd-rich-item-renderer:has(ytd-ad-slot-renderer),
-    ytd-rich-section-renderer:has(ytd-ad-slot-renderer), .ytp-ad-overlay-container,
-    #player-ads, #masthead-ad { display: none !important; }
-  `;
+  if (!youtube) return;
   let settings = QuietBrowse.normalize();
-  let style;
   let observer;
   let player;
   let playerObserver;
@@ -84,8 +75,6 @@
     const active = settings.enabled && !QuietBrowse.isAllowed(location.hostname, settings);
     if (youtube) window.postMessage({ source: 'quietbrowse-control', enabled: active }, location.origin);
     if (!active) {
-      style?.remove();
-      style = null;
       observer?.disconnect();
       observer = null;
       playerObserver?.disconnect();
@@ -97,14 +86,9 @@
       lastSkip = null;
       return;
     }
-    if (!style) {
-      if (!document.documentElement) {
-        document.addEventListener('DOMContentLoaded', refresh, { once: true });
-        return;
-      }
-      style = document.createElement('style');
-      style.textContent = css;
-      (document.head || document.documentElement).append(style);
+    if (!document.documentElement) {
+      document.addEventListener('DOMContentLoaded', refresh, { once: true });
+      return;
     }
     if (youtube && !observer) {
       // Keep the player reference while comments/recommendations change. Track
